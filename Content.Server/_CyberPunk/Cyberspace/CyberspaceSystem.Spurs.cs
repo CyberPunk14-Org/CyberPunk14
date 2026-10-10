@@ -23,6 +23,9 @@ public sealed partial class CyberspaceSystem
 
     private static readonly EntProtoId TrainingServerPrototype = "CyberTrainingServer";
 
+    /// <summary>A practice grid's links: the router to the switch, and the switch to the way in and the server.</summary>
+    private static readonly List<(int A, int B)> SandboxLinks = [(0, 1), (1, 2), (1, 3)];
+
     private sealed class Spur
     {
         public EntityUid Device;
@@ -105,7 +108,8 @@ public sealed partial class CyberspaceSystem
 
     /// <summary>
     /// Stamps a spur out from a pad: the first that fits of lengths 4, 5 and 6 in each direction, onto void
-    /// only and inside the region, trying first where it was. With no room, its node shares the pad.
+    /// only, inside the region and touching no other path, trying first where it was. With no room, its node
+    /// shares the pad.
     /// </summary>
     private void LaySpur(Spur spur, (int X, int Y) from, (int X, int Y)? prefer)
     {
@@ -142,7 +146,14 @@ public sealed partial class CyberspaceSystem
         spur.Centre = from;
         foreach (var (centre, data, pad) in candidates)
         {
-            if (!data.Concat(pad).All(t => rect.Contains(t.X, t.Y) && !CyberLayout.Walkable(FloorAt(t.X, t.Y))))
+            var tiles = data.Concat(pad).ToHashSet();
+            if (!tiles.All(t => rect.Contains(t.X, t.Y) && !CyberLayout.Walkable(FloorAt(t.X, t.Y))))
+                continue;
+
+            // It joins nothing but its machine's pad, so it's never a way round a firewall.
+            var joins = tiles.SelectMany(t => SpurDirections.Select(d => (X: t.X + d.X, Y: t.Y + d.Y)))
+                .Where(n => !tiles.Contains(n) && (Math.Abs(n.X - from.X) > 1 || Math.Abs(n.Y - from.Y) > 1));
+            if (joins.Any(n => CyberLayout.Walkable(FloorAt(n.X, n.Y))))
                 continue;
 
             foreach (var (x, y) in data)
@@ -218,7 +229,7 @@ public sealed partial class CyberspaceSystem
                 (hosts[0], PadKind.Host),
                 (hosts[1], PadKind.Host),
             },
-            Links = { (0, 1), (1, 2), (1, 3) },
+            Links = SandboxLinks,
         };
 
         var seed = _seed ^ (0x5A4DB0C5UL + (ulong) slot);

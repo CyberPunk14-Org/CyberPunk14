@@ -71,6 +71,41 @@ public sealed record DeckPush(uint Address, bool Reachable, string File, byte[] 
 public sealed record DeckOrders(int? Strike, bool Ward, string? Hold, DeckPush? Push);
 
 /// <summary>
+/// A runner an ICE sees: their id, the node they're nearest (0 if none), whether their ID passes its computer's
+/// reader, whether they're close enough to strike, the tile they stand on and their name.
+/// </summary>
+public sealed record IceRunner(int Id, int Node, bool Authorized, bool InReach, int X, int Y, string Name);
+
+/// <summary>
+/// An ICE as it stands in cyberspace this tick, for the program running it: the tile it's on, the node it's at
+/// (-1 if none), the nodes of the network it guards, the nodes linked to the one it's at, the runners it sees,
+/// and where a completed trace says an intruder is.
+/// </summary>
+public sealed record IceView(
+    int Integrity,
+    int X,
+    int Y,
+    long Here,
+    IReadOnlyList<uint> Nodes,
+    IReadOnlyList<uint> Neighbours,
+    IReadOnlyList<IceRunner> Runners,
+    (int X, int Y)? Alert);
+
+public enum IceOrderKind : byte
+{
+    Go,
+    Chase,
+    Attack,
+    GoTo,
+    Mode,
+}
+
+/// <summary>
+/// Something a program asked of the ICE it runs, by its pid. The world carries it out after the tick.
+/// </summary>
+public readonly record struct IceOrder(uint Pid, IceOrderKind Kind, int A, int B = 0);
+
+/// <summary>
 /// The machines with a UI of their own that a computer's programs reach over the network.
 /// </summary>
 public interface IMachineDevices
@@ -196,6 +231,17 @@ public sealed class MachineIo
     public string? DeckHold;
 
     public DeckPush? DeckPush;
+
+    /// <summary>The ICE each program runs, by pid, set by the world before each tick.</summary>
+    public IReadOnlyDictionary<uint, IceView> IceViews = new Dictionary<uint, IceView>();
+
+    /// <summary>The programs that asked for ICE since the world last looked, by pid.</summary>
+    public readonly HashSet<uint> IceStarts = new();
+
+    public readonly List<IceOrder> IceOrders = new();
+
+    /// <summary>The tile of the breached firewall, while <c>on_breach_signal</c> runs.</summary>
+    public (int X, int Y)? Breach;
 
     /// <summary>Every hostname the routers know on the machine's network, and its address.</summary>
     public IReadOnlyDictionary<string, uint> Hosts = new Dictionary<string, uint>();

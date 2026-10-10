@@ -564,3 +564,25 @@
             show()
 
         show()
+
+# A computer that guards its network: it starts two ICE at boot. Its reader decides who the ICE leaves alone.
+- type: entity
+  parent: ComputerProgrammable
+  id: ComputerProgrammableSecurity
+  name: security computer
+  description: A programmable computer that guards its network. At boot it puts ICE in cyberspace, to hunt any netrunner whose ID it doesn't pass.
+  components:
+  - type: WasmMachine
+    hostname: security
+    files:
+      autorun: |
+        run ice_basic &
+        run ice_basic &
+      security.txt: |
+        This computer guards its network. Its autorun file starts two ICE
+        (ice_basic) at boot, which walk the network in cyberspace and go after
+        any runner whose ID this computer's reader doesn't pass. `jobs` lists
+        them; `man ice` says how ICE works, and `new myice ice_basic` copies
+        the program to change.
+  - type: AccessReader
+    access: [["Security"]]

@@ -1,12 +1,14 @@
 using Content.Server._CyberPunk.Machines;
 using Content.Shared._CyberPunk.Cyberspace;
 using Content.Shared._CyberPunk.Machines;
+using System.Linq;
 using Content.Shared.Access.Components;
 using Content.Shared.Access.Systems;
 using Content.Shared.DoAfter;
 using Content.Shared.Interaction;
 using Content.Shared.UserInterface;
 using Robust.Server.GameStates;
+using Robust.Shared.Physics.Systems;
 using Robust.Shared.Player;
 
 namespace Content.Server._CyberPunk.Cyberspace;
@@ -27,6 +29,7 @@ public sealed partial class CyberspaceSystem
     [Dependency] private SharedDoAfterSystem _doAfter = default!;
     [Dependency] private SharedInteractionSystem _interaction = default!;
     [Dependency] private PvsOverrideSystem _pvsOverride = default!;
+    [Dependency] private SharedPhysicsSystem _physics = default!;
 
     /// <summary>How far a runner may walk from a node before its machine's UI closes, in tiles.</summary>
     public const float NodeReach = 3.2f;
@@ -79,6 +82,9 @@ public sealed partial class CyberspaceSystem
 
         args.Handled = true;
         ent.Comp.Breached.Add(machine);
+        if (node.Kind == CyberNodeKind.Firewall)
+            SignalBreach(args.Target.Value);
+
         _popup.PopupEntity(Loc.GetString("cyberspace-breached", ("node", args.Target.Value)), ent, ent);
         UseNode(ent, (args.Target.Value, node));
     }
@@ -91,6 +97,16 @@ public sealed partial class CyberspaceSystem
         if (node.Comp.Kind == CyberNodeKind.Deck && node.Comp.Machine == avatar.Owner)
         {
             _ui.OpenUi(avatar.Owner, MachineTerminalUiKey.Key, avatar.Owner);
+            return;
+        }
+
+        if (node.Comp.Kind == CyberNodeKind.Firewall && node.Comp.Machine is { } firewall)
+        {
+            if (MayPass(avatar, firewall))
+                _popup.PopupEntity(Loc.GetString("cyberspace-firewall-open", ("node", node.Owner)), avatar, avatar);
+            else
+                StartBreach(avatar, node);
+
             return;
         }
 
@@ -114,20 +130,61 @@ public sealed partial class CyberspaceSystem
 
         if (locked && !avatar.Comp.Breached.Contains(machine))
         {
-            var doAfter = new DoAfterArgs(EntityManager, avatar, BreachTime, new CyberBreachDoAfterEvent(), avatar,
-                target: node.Owner)
-            {
-                BreakOnMove = true,
-                NeedHand = false,
-            };
-
-            if (_doAfter.TryStartDoAfter(doAfter))
-                _popup.PopupEntity(Loc.GetString("cyberspace-breaching", ("node", node.Owner)), avatar, avatar);
-
+            StartBreach(avatar, node);
             return;
         }
 
         OpenRemoteUi(avatar, node, machine, key);
+    }
+
+    private void StartBreach(EntityUid avatar, EntityUid node)
+    {
+        var doAfter = new DoAfterArgs(EntityManager, avatar, BreachTime, new CyberBreachDoAfterEvent(), avatar,
+            target: node)
+        {
+            BreakOnMove = true,
+            NeedHand = false,
+        };
+
+        if (_doAfter.TryStartDoAfter(doAfter))
+            _popup.PopupEntity(Loc.GetString("cyberspace-breaching", ("node", node)), avatar, avatar);
+    }
+
+    /// <summary>
+    /// Whether a firewall lets a runner through: they breached it, or their ID passes its reader.
+    /// </summary>
+    private bool MayPass(Entity<CyberAvatarComponent> avatar, EntityUid firewall)
+    {
+        return avatar.Comp.Breached.Contains(firewall)
+               || !TryComp<AccessReaderComponent>(firewall, out var reader)
+               || _access.IsAllowed(avatar, firewall, reader);
+    }
+
+    /// <summary>
+    /// Opens each firewall's pad to the runners it lets through, and shuts it to the rest.
+    /// </summary>
+    private void TendFirewalls(List<Entity<CyberAvatarComponent>> walking)
+    {
+        var query = EntityQueryEnumerator<CyberFirewallGateComponent, CyberNodeComponent>();
+        while (query.MoveNext(out var uid, out var gate, out var node))
+        {
+            var passes = node.Machine is { } firewall
+                ? walking.Where(w => MayPass(w, firewall)).Select(w => w.Owner).ToHashSet()
+                : new HashSet<EntityUid>();
+
+            if (passes.SetEquals(gate.Passes))
+                continue;
+
+            var changed = new HashSet<EntityUid>(passes);
+            changed.SymmetricExceptWith(gate.Passes);
+            gate.Passes = passes;
+            Dirty(uid, gate);
+            foreach (var avatar in changed)
+            {
+                if (!TerminatingOrDeleted(avatar))
+                    _physics.RegenerateContacts(avatar);
+            }
+        }
     }
 
     /// <summary>

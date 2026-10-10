@@ -13,6 +13,7 @@
   - [bold]Data cable[/bold] is laid like power cable, and joins the machines along it.
   - A [bold]network switch[/bold] joins the cable on its tile and the four tiles beside it, and any switch or router next to it, into one network, while it has power.
   - A [bold]network router[/bold] does the same, and also gives every computer on its network an address, connects its network to the others, and keeps the list of hostnames.
+  - A [bold]network firewall[/bold] is a switch that, in cyberspace, shuts the way past it to netrunners its ID reader doesn't pass. Rack it beside the router and cable the machines it guards to it alone.
 
   Without a powered router, cabled computers have no address and can't send anything.
 

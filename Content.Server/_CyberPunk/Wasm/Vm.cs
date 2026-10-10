@@ -163,6 +163,8 @@ public sealed class Vm : IDisposable
         _io.Outbox.Clear();
         _io.DeviceCommands.Clear();
         _io.Flash = null;
+        _io.IceStarts.Clear();
+        _io.IceOrders.Clear();
         _io.Raw = false;
         _io.Keys.Clear();
         _io.Editor.Clear();
@@ -535,6 +537,34 @@ public sealed class Vm : IDisposable
     }
 
     /// <summary>
+    /// The ICE its programs run, by pid, for them to see.
+    /// </summary>
+    public IReadOnlyDictionary<uint, IceView> IceViews
+    {
+        set => _io.IceViews = value;
+    }
+
+    /// <summary>
+    /// The pids of the programs that asked for ICE since the last call.
+    /// </summary>
+    public List<uint> TakeIceStarts()
+    {
+        var starts = _io.IceStarts.Order().ToList();
+        _io.IceStarts.Clear();
+        return starts;
+    }
+
+    /// <summary>
+    /// What its programs asked of their ICE since the last call, in order.
+    /// </summary>
+    public List<IceOrder> TakeIceOrders()
+    {
+        var orders = new List<IceOrder>(_io.IceOrders);
+        _io.IceOrders.Clear();
+        return orders;
+    }
+
+    /// <summary>
     /// Hands the machine a packet. False (and dropped) if it isn't running or its inbox is full.
     /// </summary>
     public bool Deliver(Packet packet)
@@ -584,6 +614,22 @@ public sealed class Vm : IDisposable
         var flash = _io.Flash;
         _io.Flash = null;
         return flash;
+    }
+
+    /// <summary>
+    /// Tells a program that a firewall was breached at <paramref name="at"/>: its <c>on_breach_signal</c> runs
+    /// just before its next tick. Nothing if it has no such hook.
+    /// </summary>
+    public void SignalBreach(uint pid, (int X, int Y) at)
+    {
+        if (State != VmState.Running)
+            return;
+
+        foreach (var process in _procs.Concat(_jobs.SelectMany(j => j.Procs)))
+        {
+            if (process.Pid == pid && process.BreachHook != null)
+                process.Breaches.Add(at);
+        }
     }
 
     /// <summary>
@@ -788,6 +834,29 @@ public sealed class Vm : IDisposable
                 return (0, false, false);
 
             call = process.TickHook;
+            if (process.BreachHook is { } breach && process.Breaches.Count > 0)
+            {
+                var breaches = process.Breaches.ToList();
+                process.Breaches.Clear();
+                var tick = call;
+                call = () =>
+                {
+                    try
+                    {
+                        foreach (var at in breaches)
+                        {
+                            _io.Breach = at;
+                            breach();
+                        }
+                    }
+                    finally
+                    {
+                        _io.Breach = null;
+                    }
+
+                    tick();
+                };
+            }
         }
         else
         {
@@ -992,6 +1061,7 @@ public sealed class Vm : IDisposable
                 Start = start,
                 TickHook = instance.GetAction("tick"),
                 DoorHook = instance.GetFunction<int>("on_door_request"),
+                BreachHook = instance.GetAction("on_breach_signal"),
             };
         }
         catch
@@ -1049,6 +1119,12 @@ public sealed class Vm : IDisposable
 
         /// <summary>Its <c>on_door_request</c> hook, if it has one.</summary>
         public required Func<int>? DoorHook;
+
+        /// <summary>Its <c>on_breach_signal</c> hook, if it has one.</summary>
+        public required Action? BreachHook;
+
+        /// <summary>Breached firewalls its <c>on_breach_signal</c> hasn't heard of yet.</summary>
+        public readonly List<(int X, int Y)> Breaches = new();
 
         public bool Started;
 

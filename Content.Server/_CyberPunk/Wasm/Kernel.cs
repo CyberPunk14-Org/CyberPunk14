@@ -196,7 +196,7 @@ public static class Kernel
         new("man", "(param $topic i32 $len i32 $buf i32 $cap i32) (result i32)", KernelScope.Any, 2,
             "Copies a manual page into buf (an empty topic lists them); returns its full length, or -1 for no such page."),
         new("scaffold", "(param $kind i32 $len i32 $buf i32 $cap i32) (result i32)", KernelScope.Any, 2,
-            "Copies a starting Wire program for a kind of machine (computer, door, camera, ice, deck or implant), or the source of the operating system (os) or a program that comes with it (nano, blade, ward), into buf; returns its full length, or -1."),
+            "Copies a starting Wire program for a kind of machine (computer, door, camera, ice, deck or implant), or the source of the operating system (os) or a program that comes with it (nano, blade, ward, ice_basic), into buf; returns its full length, or -1."),
         new("wire_program", "(param $buf i32 $cap i32) (result i32)", KernelScope.Any, 2,
             "Kept for programs built for the old Wire runtime; always -1, since Wire now builds straight to programs."),
         new("device_io", "(param $port i32 $buf i32 $len i32) (result i32)", KernelScope.Any, 0,
@@ -254,25 +254,27 @@ public static class Kernel
         new("ice_integrity", "(result i32)", KernelScope.IceProgram, 4,
             "The ICE's integrity, 100 when it starts: runners' strikes wear it down, and at none it derezzes and this program is halted."),
         new("ice_nodes", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
-            "Copies the nodes of the network it guards into buf as little-endian u32s; returns how many there are."),
+            "Copies the nodes of the network it guards into buf as little-endian u32s (patrolling, only those on its side of the firewalls); returns how many there are."),
         new("ice_neighbours", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Copies the nodes linked to the one it stands at into buf as little-endian u32s; returns how many there are."),
         new("ice_go", "(param $node i32) (result i32)", KernelScope.IceProgram, 4,
-            "Walks to a node of its network along the paths, the shortest way. 0 ok, -1 not one of its nodes."),
+            "Walks to a node of its network along the paths, the shortest way. Patrolling, it keeps off firewalls unless they're its only way back to its side. 0 ok, -1 not one of its nodes (or past a firewall, patrolling)."),
         new("ice_chase", "(param $runner i32) (result i32)", KernelScope.IceProgram, 4,
-            "Chases a runner it can see, along the paths, for as long as they stay in its network. 0 ok, -1 it can't see them."),
+            "Chases a runner it can see, along the paths, for as long as they stay in its network; engaging, it follows them out of it too, and comes back once it stops engaging. 0 ok, -1 it can't see them."),
         new("ice_runners", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
-            "Copies the netrunners in its network that it can see (along a clear path, within 9 tiles) into buf, one per line: id, the node they are nearest, authorized (1 if they carry the organization's ID card), in reach (1 if close enough to strike), the x and y of the tile they stand on, and name, separated by spaces. Returns the full length."),
+            "Copies the netrunners in its network (anywhere, engaging) that it can see (along a clear path, within 9 tiles) into buf, one per line: id, the node they are nearest, authorized (1 if they carry the organization's ID card), in reach (1 if close enough to strike), the x and y of the tile they stand on, and name, separated by spaces. Returns the full length."),
         new("ice_attack", "(param $runner i32) (result i32)", KernelScope.IceProgram, 4,
             "Strikes a runner in reach, taking a quarter of their integrity (an eighth through a ward; once a second at most); at none left they are thrown out. 0 struck, -1 not in reach."),
         new("ice_position", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Copies the tile the ICE stands on into buf: x then y, little-endian i32s. Returns 8."),
         new("ice_alert", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Where a completed trace says an intruder is: copies that tile into buf (x then y, little-endian i32s) and returns 8, or returns 0 if no alert came this tick. A trace runs on any runner who steps up to one of the network's computers without the organization's ID card; when it completes, every ICE on the network is alerted, once."),
+        new("ice_breach", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
+            "During on_breach_signal: copies the tile of the firewall that was breached into buf (x then y, little-endian i32s) and returns 8; -1 outside the hook."),
         new("ice_go_to", "(param $x i32 $y i32) (result i32)", KernelScope.IceProgram, 4,
             "Walks to a tile of its network along the paths, the shortest way; it stops if there is no way there. 0 ok."),
         new("ice_mode", "(param $mode i32) (result i32)", KernelScope.IceProgram, 4,
-            "Shows how alert the ICE is, in its colour, for runners to read: 0 patrolling, 1 searching, 2 engaging. Only for show. 0 ok, -1 no such mode."),
+            "Sets how alert the ICE is, shown in its colour: 0 patrolling, 1 searching, 2 engaging. Patrolling it stays on its side of the firewalls; searching or engaging it crosses them, and engaging it chases runners out of its network. 0 ok, -1 no such mode."),
         new("deck_integrity", "(result i32)", KernelScope.Deck, 4,
             "The runner's integrity, 100 when they jack in: strikes wear it down, and at none they are thrown out."),
         new("deck_status", "(result i32)", KernelScope.Deck, 4,
@@ -310,6 +312,8 @@ public static class Kernel
             "Runs 30 times a second after start, until the program calls exit. Without it the program ends when start returns."),
         new("on_door_request", "(func (export \"on_door_request\") (result i32))", KernelScope.DoorController,
             "Runs when someone tries to open the door by hand, before it opens: return 1 to let them in, 0 to keep it shut. request_name, request_holding and request_cards say who they are. While a program has this hook, every hand on the door asks it first."),
+        new("on_breach_signal", "(func (export \"on_breach_signal\"))", KernelScope.IceProgram,
+            "Runs when a runner breaches a firewall on the network the program's ICE guards, just before its next tick; ice_breach says where."),
     };
 
     private static readonly Dictionary<string, KernelFunction> ByName = Functions.ToDictionary(f => f.Name);
@@ -420,7 +424,8 @@ public static class Kernel
           nano FILE                  edit a text file (Ctrl+G in it for help)
           new NAME [KIND]            start a Wire program, NAME.wire, for a computer
                                      (or a door, camera, ice, deck or implant; os,
-                                     nano, blade or ward for their own source)
+                                     nano, blade, ward or ice_basic for their own
+                                     source)
           build FILE.wire [OUT.bin]  build a program (man wire)
           run FILE [ARGS...]         run a program
           run FILE [ARGS...] &       run it as a background job: it runs alongside

@@ -35,12 +35,21 @@ cyberspace-avatar-died = Your avatar flatlines, and you slam back into a body th
 cyberspace-node-no-ui = There's nothing to open at {THE($node)}.
 cyberspace-breaching = {CAPITALIZE(THE($node))} is locked. You start breaching it...
 cyberspace-breached = You breach {THE($node)}.
+cyberspace-firewall-open = {CAPITALIZE(THE($node))} lets you through.
 
 cyberspace-ward-up = Your ward goes up.
 cyberspace-strike = You strike {THE($target)}. Integrity {$integrity}%.
 cyberspace-struck = {CAPITALIZE(THE($striker))} strikes you! Integrity {$integrity}%.
 cyberspace-strike-cut-out = You cut {THE($target)} out of cyberspace.
 cyberspace-cut-down = Another runner cuts you down. Dumpshock!
+cyberspace-strike-ice = You strike the ICE. Its integrity {$integrity}%.
+cyberspace-ice-derezzed = The ICE shatters and derezzes!
+
+cyberspace-ice-examined = ICE, guarding this network. Integrity {$integrity}%.
+cyberspace-ice-strikes = ICE strikes you! Integrity {$integrity}%.
+cyberspace-ice-strikes-warded = ICE strikes you! Integrity {$integrity}%. Your ward takes half.
+cyberspace-ice-dumpshock = ICE tears through what's left of you. Dumpshock! You come to with your head burning.
+cyberspace-ice-practice-out = The ICE tears through you, and the practice grid throws you out.
 
 cyberspace-program-run = You run {$file}.
 cyberspace-program-run-at = You run {$file} at {THE($target)}.

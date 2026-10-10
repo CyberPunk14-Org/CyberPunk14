@@ -141,6 +141,7 @@ internal static partial class WireRuntime
   (import "sb_v8" "ice_attack" (func $ice_attack (param i32) (result i32)))
   (import "sb_v8" "ice_position" (func $ice_position (param i32 i32) (result i32)))
   (import "sb_v8" "ice_alert" (func $ice_alert (param i32 i32) (result i32)))
+  (import "sb_v8" "ice_breach" (func $ice_breach (param i32 i32) (result i32)))
   (import "sb_v8" "ice_go_to" (func $ice_go_to (param i32 i32) (result i32)))
   (import "sb_v8" "ice_mode" (func $ice_mode (param i32) (result i32)))
   (import "sb_v8" "deck_integrity" (func $deck_integrity (result i32)))

@@ -468,7 +468,10 @@ public sealed partial class CyberspaceSystem
     {
         base.Update(frameTime);
         TendRunners();
-        TendDecks();
+        var walking = WalkingRunners();
+        TendIce(frameTime, walking);
+        TendDecks(walking);
+        TendFirewalls(walking);
         MirrorIds();
         TendRemoteUis();
     }

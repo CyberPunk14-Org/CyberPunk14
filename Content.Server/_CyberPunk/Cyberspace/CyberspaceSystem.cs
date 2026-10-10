@@ -76,6 +76,7 @@ public sealed partial class CyberspaceSystem : EntitySystem
         [CyberNodeKind.Device] = "CyberNodeDevice",
         [CyberNodeKind.AccessPoint] = "CyberNodeAccessPoint",
         [CyberNodeKind.Deck] = "CyberNodeDeck",
+        [CyberNodeKind.Firewall] = "CyberNodeFirewall",
     };
 
     private sealed class Region
@@ -126,6 +127,7 @@ public sealed partial class CyberspaceSystem : EntitySystem
         InitializeRunners();
         InitializeNodes();
         InitializeDeck();
+        InitializeIce();
     }
 
     private void OnRoundRestart(RoundRestartCleanupEvent ev)
@@ -423,6 +425,7 @@ public sealed partial class CyberspaceSystem : EntitySystem
             Pads = pads.Select(p => (p.Slot, p.Kind)).ToList(),
             Links = padLinks.ToList(),
             Gate = 0,
+            Zones = Zones(pads.Select(p => HasComp<FirewallComponent>(p.Machine)).ToList(), padLinks),
         };
 
         var machines = pads.Select(p => p.Machine).ToList();
@@ -443,7 +446,35 @@ public sealed partial class CyberspaceSystem : EntitySystem
         {
             ClearOutside(CyberLayout.Tiles(from), CyberLayout.Tiles(region.Cells!.Value));
             MoveRunners(r, CyberLayout.Tiles(from));
+            MoveIce(r);
         }
+    }
+
+    /// <summary>
+    /// Which side of the firewalls each pad is on: pads linked without a firewall between them share a side, and
+    /// a firewall's is -1. Null if there are no firewalls.
+    /// </summary>
+    private static List<int>? Zones(List<bool> firewalls, IEnumerable<(int A, int B)> links)
+    {
+        if (!firewalls.Contains(true))
+            return null;
+
+        var zones = Enumerable.Range(0, firewalls.Count).ToList();
+        int Find(int i) => zones[i] == i ? i : zones[i] = Find(zones[i]);
+
+        foreach (var (a, b) in links)
+        {
+            if (!firewalls[a] && !firewalls[b])
+                zones[Find(a)] = Find(b);
+        }
+
+        var result = new List<int>(firewalls.Count);
+        for (var i = 0; i < firewalls.Count; i++)
+        {
+            result.Add(firewalls[i] ? -1 : Find(i));
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -603,7 +634,7 @@ public sealed partial class CyberspaceSystem : EntitySystem
                 QueueDel(node);
         }
 
-        // Routers and switches go by the lowest address on their network: "router 10.4".
+        // Routers, switches and firewalls go by the lowest address on their network: "router 10.4".
         var lowest = addresses.Count > 0 ? addresses.Values.Min() : (uint?) null;
         var nodes = new Dictionary<EntityUid, EntityUid>();
         foreach (var (machine, slot, pad) in pads)
@@ -611,13 +642,13 @@ public sealed partial class CyberspaceSystem : EntitySystem
             var kind = pad switch
             {
                 PadKind.Router => CyberNodeKind.Router,
-                PadKind.Switch => CyberNodeKind.Switch,
+                PadKind.Switch => HasComp<FirewallComponent>(machine) ? CyberNodeKind.Firewall : CyberNodeKind.Switch,
                 _ => HostKind(machine),
             };
 
             var label = (kind, addresses.TryGetValue(machine, out var address), lowest) switch
             {
-                (CyberNodeKind.Router or CyberNodeKind.Switch, _, { } low) => $"{KindName(kind)} 10.{(low >> 16) & 255}",
+                (CyberNodeKind.Router or CyberNodeKind.Switch or CyberNodeKind.Firewall, _, { } low) => $"{KindName(kind)} 10.{(low >> 16) & 255}",
                 (_, true, _) => $"{KindName(kind)} {MachineIo.FormatAddress(address)}",
                 _ => KindName(kind),
             };
@@ -678,6 +709,7 @@ public sealed partial class CyberspaceSystem : EntitySystem
             CyberNodeKind.Backbone => "the city backbone",
             CyberNodeKind.Router => "router",
             CyberNodeKind.Switch => "switch",
+            CyberNodeKind.Firewall => "firewall",
             CyberNodeKind.Computer => "computer",
             CyberNodeKind.DoorController => "door controller",
             CyberNodeKind.Camera => "camera",

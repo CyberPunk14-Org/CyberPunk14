@@ -17,6 +17,20 @@
             "name": "diamond"
         },
         {
+            "name": "firewall"
+        },
+        {
+            "name": "ice",
+            "delays": [
+                [
+                    0.08,
+                    0.08,
+                    0.08,
+                    0.08
+                ]
+            ]
+        },
+        {
             "name": "runner"
         },
         {

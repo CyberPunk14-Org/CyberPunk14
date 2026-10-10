@@ -196,6 +196,44 @@ public sealed partial class WasmMachineSystem : EntitySystem
     }
 
     /// <summary>
+    /// Sets what a computer's programs see of the ICE they run, by pid.
+    /// </summary>
+    public void SetIceViews(Entity<WasmMachineComponent?> ent, IReadOnlyDictionary<uint, IceView> views)
+    {
+        if (Resolve(ent, ref ent.Comp, false) && ent.Comp.Vm is { } vm)
+            vm.IceViews = views;
+    }
+
+    /// <summary>
+    /// Whether a program is running on a machine, by its pid.
+    /// </summary>
+    public bool IsRunning(Entity<WasmMachineComponent?> ent, uint pid)
+    {
+        return Resolve(ent, ref ent.Comp, false) && ent.Comp.Vm is { } vm && vm.IsRunning(pid);
+    }
+
+    /// <summary>
+    /// Tells a program on a machine, by its pid, that a firewall was breached at a tile.
+    /// </summary>
+    public void SignalBreach(Entity<WasmMachineComponent?> ent, uint pid, (int X, int Y) at)
+    {
+        if (Resolve(ent, ref ent.Comp, false))
+            ent.Comp.Vm?.SignalBreach(pid, at);
+    }
+
+    /// <summary>
+    /// Ends a program on a machine, by its pid, saying why on its terminal.
+    /// </summary>
+    public void Halt(Entity<WasmMachineComponent?> ent, uint pid, string why)
+    {
+        if (!Resolve(ent, ref ent.Comp, false) || ent.Comp.Vm is not { } vm)
+            return;
+
+        vm.Halt(pid, why);
+        CollectOutput((ent.Owner, ent.Comp));
+    }
+
+    /// <summary>
     /// Starts a program at a machine's shell, as <c>run</c> would.
     /// </summary>
     /// <returns>Why it couldn't, or null.</returns>
@@ -296,6 +334,18 @@ public sealed partial class WasmMachineSystem : EntitySystem
             if (vm.TakeDeckOrders() is { } orders)
             {
                 var ev = new DeckOrdersEvent(orders);
+                RaiseLocalEvent(ent, ref ev);
+            }
+
+            if (vm.TakeIceStarts() is { Count: > 0 } starts)
+            {
+                var ev = new IceStartedEvent(starts);
+                RaiseLocalEvent(ent, ref ev);
+            }
+
+            if (vm.TakeIceOrders() is { Count: > 0 } iceOrders)
+            {
+                var ev = new IceOrdersEvent(iceOrders);
                 RaiseLocalEvent(ent, ref ev);
             }
 
@@ -409,6 +459,18 @@ public sealed partial class WasmMachineSystem : EntitySystem
 /// </summary>
 [ByRefEvent]
 public readonly record struct DeckOrdersEvent(DeckOrders Orders);
+
+/// <summary>
+/// Raised on a computer when programs on it ask for ICE, with their pids.
+/// </summary>
+[ByRefEvent]
+public readonly record struct IceStartedEvent(List<uint> Pids);
+
+/// <summary>
+/// Raised on a computer when its programs give the ICE they run orders.
+/// </summary>
+[ByRefEvent]
+public readonly record struct IceOrdersEvent(List<IceOrder> Orders);
 
 /// <summary>
 /// Raised on a deck when a program on it sets the colour its runner's virtual body shows in.

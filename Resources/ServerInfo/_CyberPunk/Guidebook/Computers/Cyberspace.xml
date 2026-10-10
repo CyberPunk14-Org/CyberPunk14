@@ -17,10 +17,23 @@
   Your virtual body is a computer, your deck, with an address on the network you came in through ([mono]ip[/mono] shows it). Its disk keeps its files between runs. Open its terminal from the action bar. Type [mono]colour #4de6ff[/mono] in it to change the colour you show in; anyone at your deck's terminal can change it too. Another runner who breaches your deck's node opens its terminal, files and all. It comes with the same examples as a programmable computer.
 
   ## Programs in hand
-  Type [mono]hold FILE[/mono] at your deck to put a program in your virtual hand. Use it in your hand to run it on your deck, or use it on another runner to run it at them. Drop it and it's gone, though the file stays on your deck. Only one held program runs at a time.
-  - [mono]hold blade[/mono]: your deck's weapon. Each strike takes a quarter of a runner's [bold]integrity[/bold] (an eighth through a ward), every two-thirds of a second, within reach. At none left they're cut out of cyberspace, with dumpshock. It doesn't move you, so walk into reach yourself.
+  Type [mono]hold FILE[/mono] at your deck to put a program in your virtual hand. Use it in your hand to run it on your deck, or use it on ICE or another runner to run it at them. Drop it and it's gone, though the file stays on your deck. Only one held program runs at a time.
+  - [mono]hold blade[/mono]: your deck's weapon. Each strike takes a quarter of a runner's or ICE's [bold]integrity[/bold] (an eighth of a runner's through a ward), every two-thirds of a second, within reach. A runner with none left is cut out of cyberspace, with dumpshock; ICE derezzes. Used in your hand, it goes for the nearest ICE. It doesn't move you, so walk into reach yourself.
   - [mono]hold ward[/mono]: halves the strikes on you for two seconds, and can go up again six seconds later.
   - Write your own with [mono]new NAME deck[/mono], and read blade's or ward's with [mono]new NAME blade[/mono]. [mono]man deck[/mono] lists what a deck's programs can do.
+
+  ## ICE
+  [bold]ICE[/bold] guards a network: a spinning shape walking its paths, run by a program on one of its computers. A security computer starts its ICE when it boots, and any computer can start more with [mono]run ice_basic &amp;[/mono]. ICE keeps to its network's region unless it's engaging a runner, when it follows them anywhere and comes back once it gives up. It leaves alone any runner whose ID the computer running it passes. Its colour says what it's doing:
+  - [color=#BF4DFF]violet[/color]: patrolling from node to node. Three seconds in its sight (9 tiles along a clear path) and it comes for you.
+  - [color=#FFCC26]yellow[/color]: searching for you where it last saw you.
+  - [color=#FF2633]red[/color]: engaging. It chases you anywhere, even out of its network, and strikes when you're within reach: a quarter of your integrity once a second (an eighth through a ward). At none left you're thrown out with dumpshock and your head burns. Break its sight for eight seconds and it goes back to searching.
+  Strike it back with your blade: four strikes derez it, and its program halts until someone runs it again. Practice grid ICE hits as hard but throws you out without dumpshock or burns. Write your own ICE with [mono]new NAME ice[/mono], or start from [mono]new NAME ice_basic[/mono]; [mono]man ice[/mono] lists what ICE can do.
+
+  ## Firewalls
+  <Box>
+    <GuideEntityEmbed Entity="NetworkFirewall"/>
+  </Box>
+  A [bold]network firewall[/bold] is a switch that guards the machines behind it: put it between a router and the rest of a network. In cyberspace its pad is shut like a locked door to any runner whose ID its reader doesn't pass. Stand at it for three seconds to breach it, and it lets you through until you jack out, but breaching it sets off every ICE on the network: [mono]ice_basic[/mono] comes straight for the firewall, engaging. Patrolling ICE stays on its own side of a firewall; searching or engaging ICE walks through it.
 
   ## Pushing files
   [mono]push FILE[/mono] copies a file from your deck onto the computer whose node you stand at, once its lock lets you (it's nobody's, your ID opens it, or you've breached it). [mono]push ADDR FILE[/mono] copies it over the network to a computer your ID opens. It lands under its own name, out of any folder.

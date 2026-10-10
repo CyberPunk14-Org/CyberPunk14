@@ -5,7 +5,7 @@ meta:
   forkId: ""
   forkVersion: ""
   time: 08/23/2026 10:22:08
-  entityCount: 3831
+  entityCount: 3836
 maps:
 - 23
 grids:
@@ -7429,6 +7429,21 @@ entities:
       pos: 56.52971,43.0394
 - proto: CableData
   entities:
+  - uid: 3833
+    components:
+    - type: Transform
+      parent: 1
+      pos: 28.5,63.5
+  - uid: 3834
+    components:
+    - type: Transform
+      parent: 1
+      pos: 29.5,63.5
+  - uid: 3835
+    components:
+    - type: Transform
+      parent: 1
+      pos: 29.5,62.5
   - uid: 3798
     components:
     - type: Transform
@@ -12808,6 +12823,13 @@ entities:
       pos: 27.5,65.5
     - type: WasmMachine
       hostname: dev-6
+- proto: ComputerProgrammableSecurity
+  entities:
+  - uid: 3836
+    components:
+    - type: Transform
+      parent: 1
+      pos: 29.5,62.5
 - proto: ComputerRadar
   entities:
   - uid: 1136
@@ -16710,6 +16732,16 @@ entities:
       parent: 1
       rot: -1.5707963267948966 rad
       pos: 37.504547,15.171228
+- proto: NetworkFirewall
+  entities:
+  - uid: 3832
+    components:
+    - type: Transform
+      parent: 1
+      pos: 28.5,64.5
+    - type: AccessReader
+      access:
+      - - Security
 - proto: NetworkRouter
   entities:
   - uid: 3811

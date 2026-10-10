@@ -16,9 +16,19 @@ public sealed record RegionGraph
     /// <summary>The pad (a router) whose top side opens onto the bus, if any.</summary>
     public int? Gate;
 
+    /// <summary>
+    /// Which side of the firewalls each pad is on, a firewall's own being -1. Corridors on different sides
+    /// never share a cell, so the only way from one side to the other is across a firewall's pad. Null for no
+    /// firewalls.
+    /// </summary>
+    public List<int>? Zones;
+
     public bool Same(RegionGraph other)
     {
-        return Pads.SequenceEqual(other.Pads) && Links.SequenceEqual(other.Links) && Gate == other.Gate;
+        return Pads.SequenceEqual(other.Pads)
+               && Links.SequenceEqual(other.Links)
+               && Gate == other.Gate
+               && (Zones ?? []).SequenceEqual(other.Zones ?? []);
     }
 }
 
@@ -104,11 +114,41 @@ public static class CyberRegionGenerator
     }
 
     /// <summary>
-    /// Routes every link as a corridor of cells from pad to pad, around other pads. Returns the sides each
-    /// cell's paths leave by.
+    /// Routes every link as a corridor of cells from pad to pad, around other pads and the corridors on the other
+    /// side of a firewall. Returns the sides each cell's paths leave by.
     /// </summary>
-    private static Dictionary<(int, int), bool[]> Route(int width, int height, RegionGraph graph)
+    /// <remarks>
+    /// With firewalls, one side's corridor can cut off a link on the other, so links through firewalls go first
+    /// and, if a link still can't be routed, they're tried again in other orders.
+    /// </remarks>
+    private static Dictionary<(int, int), bool[]> Route(int width, int height, RegionGraph graph, ref CyberRng rng,
+        out int bestMissed)
     {
+        var order = Enumerable.Range(0, graph.Links.Count)
+            .OrderBy(l => graph.Zones is { } z && (z[graph.Links[l].A] < 0 || z[graph.Links[l].B] < 0) ? 0 : 1)
+            .ToList();
+
+        Dictionary<(int, int), bool[]>? best = null;
+        bestMissed = int.MaxValue;
+        for (var attempt = 0; attempt < Attempts; attempt++)
+        {
+            var sides = Route(width, height, graph, order, out var missed);
+            if (missed < bestMissed)
+                (best, bestMissed) = (sides, missed);
+
+            if (missed == 0)
+                break;
+
+            rng.Shuffle(order);
+        }
+
+        return best!;
+    }
+
+    private static Dictionary<(int, int), bool[]> Route(int width, int height, RegionGraph graph, List<int> order,
+        out int missed)
+    {
+        missed = 0;
         var sides = new Dictionary<(int, int), bool[]>();
         bool[] SidesOf((int, int) cell)
         {
@@ -124,19 +164,43 @@ public static class CyberRegionGenerator
             SidesOf(slot);
         }
 
-        foreach (var (a, b) in graph.Links)
+        // Ordinary pads on the same side may be walked through, just like their corridors. Firewall pads
+        // are deliberately not owned by a side: they may only be the endpoints of a route.
+        var sideOf = new Dictionary<(int, int), int>();
+        if (graph.Zones is { } padZones)
         {
+            for (var i = 0; i < graph.Pads.Count; i++)
+            {
+                if (padZones[i] >= 0)
+                    sideOf[graph.Pads[i].Slot] = padZones[i];
+            }
+        }
+
+        foreach (var link in order)
+        {
+            var (a, b) = graph.Links[link];
             var (from, to) = (graph.Pads[a].Slot, graph.Pads[b].Slot);
             if (from == to)
                 continue;
 
-            // Breadth first from `from`, through cells that aren't pads.
+            // A link between two firewalls is a side of its own.
+            var zone = graph.Zones is { } zones
+                ? zones[a] >= 0 ? zones[a] : zones[b] >= 0 ? zones[b] : -2 - link
+                : 0;
+
+            // Prefer reusing this side's corridors over carving more approaches to a firewall.
+            // A sequence number makes equal-cost paths deterministic.
             var came = new Dictionary<(int, int), (int, int)>();
-            var queue = new Queue<(int X, int Y)>();
-            queue.Enqueue(from);
+            var costs = new Dictionary<(int, int), int> { [from] = 0 };
+            var queue = new PriorityQueue<(int X, int Y), (int Cost, int Order)>();
+            var sequence = 0;
+            queue.Enqueue(from, (0, sequence++));
             var found = false;
-            while (queue.TryDequeue(out var at))
+            while (queue.TryDequeue(out var at, out var priority))
             {
+                if (priority.Cost != costs[at])
+                    continue;
+
                 if (at == to)
                 {
                     found = true;
@@ -149,16 +213,28 @@ public static class CyberRegionGenerator
                     if (n.Item1 < 0 || n.Item2 < 0 || n.Item1 >= width || n.Item2 >= height)
                         continue;
 
-                    if (n == from || came.ContainsKey(n) || pads.Contains(n) && n != to)
+                    var owned = sideOf.TryGetValue(n, out var side);
+                    if (n == from || owned && side != zone)
                         continue;
 
+                    if (pads.Contains(n) && n != to && (!owned || side != zone))
+                        continue;
+
+                    var cost = priority.Cost + (owned ? 0 : 1);
+                    if (costs.TryGetValue(n, out var previous) && previous <= cost)
+                        continue;
+
+                    costs[n] = cost;
                     came[n] = at;
-                    queue.Enqueue(n);
+                    queue.Enqueue(n, (cost, sequence++));
                 }
             }
 
             if (!found)
+            {
+                missed++;
                 continue;
+            }
 
             var back = to;
             while (back != from)
@@ -167,11 +243,68 @@ public static class CyberRegionGenerator
                 var d = Array.FindIndex(WfcWave.Directions, dir => prev.Item1 + dir.X == back.Item1 && prev.Item2 + dir.Y == back.Item2);
                 SidesOf(prev)[d] = true;
                 SidesOf(back)[WfcWave.Opposite(d)] = true;
+                if (!pads.Contains(back))
+                    sideOf[back] = zone;
+
                 back = prev;
             }
         }
 
         return sides;
+    }
+
+    /// <summary>
+    /// Keeps the current slots if they can be routed. Otherwise tries other slot assignments: retrying
+    /// corridor order alone cannot fix pads that fence off another cable side.
+    /// </summary>
+    public static bool TryLayout(ulong seed, RegionShape shape, RegionGraph graph, out RegionGraph layout)
+    {
+        layout = graph;
+        var routeRng = new CyberRng(seed);
+        Route(shape.Width, shape.Height, layout, ref routeRng, out var missed);
+        if (missed == 0)
+            return true;
+
+        var rng = new CyberRng(seed ^ 0xD1B54A32D192ED03);
+        for (var attempt = 0; attempt < 256; attempt++)
+        {
+            var hosts = shape.HostSlots;
+            var switches = shape.SwitchSlots;
+            rng.Shuffle(hosts);
+            rng.Shuffle(switches);
+            var pads = graph.Pads.ToList();
+            var hostGroups = Enumerable.Range(0, pads.Count).Where(i => pads[i].Kind == PadKind.Host)
+                .GroupBy(i => graph.Zones?[i] ?? 0).ToList();
+            rng.Shuffle(hostGroups);
+            foreach (var group in hostGroups)
+            {
+                var anchor = hosts[0];
+                var nearest = hosts.OrderBy(s => Math.Abs(s.X - anchor.X) + Math.Abs(s.Y - anchor.Y)).ToList();
+                var index = 0;
+                foreach (var pad in group)
+                {
+                    var slot = nearest[index++];
+                    pads[pad] = (slot, pads[pad].Kind);
+                    hosts.Remove(slot);
+                }
+            }
+
+            var hub = 0;
+            for (var i = 0; i < pads.Count; i++)
+            {
+                if (pads[i].Kind == PadKind.Switch)
+                    pads[i] = (switches[hub++], pads[i].Kind);
+            }
+
+            layout = graph with { Pads = pads };
+            routeRng = new CyberRng(seed);
+            Route(shape.Width, shape.Height, layout, ref routeRng, out missed);
+            if (missed == 0)
+                return true;
+        }
+
+        layout = graph;
+        return false;
     }
 
     /// <summary>
@@ -181,7 +314,8 @@ public static class CyberRegionGenerator
     public static CyberFloor[] Generate(ulong seed, RegionShape shape, RegionGraph graph)
     {
         var (w, h) = (shape.Width, shape.Height);
-        var sides = Route(w, h, graph);
+        var rng = new CyberRng(seed);
+        var sides = Route(w, h, graph, ref rng, out _);
         if (graph.Gate is { } gate)
         {
             var cell = graph.Pads[gate].Slot;
@@ -222,7 +356,6 @@ public static class CyberRegionGenerator
             return set;
         }
 
-        var rng = new CyberRng(seed);
         int[]? solved = null;
         for (var attempt = 0UL; attempt < Attempts; attempt++)
         {

@@ -50,9 +50,9 @@ public sealed partial class CyberspaceSystem
     }
 
     /// <summary>
-    /// Shows every jacked-in deck what it can see, for its programs this tick.
+    /// The virtual bodies of every runner jacked in now.
     /// </summary>
-    private void TendDecks()
+    private List<Entity<CyberAvatarComponent>> WalkingRunners()
     {
         var walking = new List<Entity<CyberAvatarComponent>>();
         var query = EntityQueryEnumerator<NetrunnerComponent>();
@@ -62,10 +62,19 @@ public sealed partial class CyberspaceSystem
                 walking.Add((avatar.Value, comp));
         }
 
+        return walking;
+    }
+
+    /// <summary>
+    /// Shows every jacked-in deck what it can see, for its programs this tick.
+    /// </summary>
+    private void TendDecks(List<Entity<CyberAvatarComponent>> walking)
+    {
         var now = _timing.CurTime;
         foreach (var deck in walking)
         {
             var targets = new List<DeckTarget>();
+            AddIceTargets(deck, targets);
             foreach (var other in walking)
             {
                 if (other.Owner == deck.Owner || !_interaction.InRangeUnobstructed(deck.Owner, other.Owner, DeckSight))
@@ -121,7 +130,8 @@ public sealed partial class CyberspaceSystem
     }
 
     /// <summary>
-    /// Strikes another runner in reach, by the id their deck's programs know them by. Runners can strike anyone.
+    /// Strikes ICE or another runner in reach, by the id their deck's programs know them by. Runners can strike
+    /// anyone.
     /// </summary>
     private void Strike(Entity<CyberAvatarComponent> ent, int id)
     {
@@ -129,10 +139,21 @@ public sealed partial class CyberspaceSystem
         if (now < ent.Comp.StrikeReadyAt
             || !TryGetEntity(new NetEntity(id), out var target)
             || target == ent.Owner
-            || !TryComp<CyberAvatarComponent>(target, out var victim)
-            || !IsJackedIn(victim.Body, out var walked)
-            || walked != target
             || !_transform.InRange(ent.Owner, target.Value, StrikeReach))
+        {
+            return;
+        }
+
+        if (TryComp<IceComponent>(target, out var ice))
+        {
+            ent.Comp.StrikeReadyAt = now + StrikeCooldown;
+            StrikeIce(ent, (target.Value, ice));
+            return;
+        }
+
+        if (!TryComp<CyberAvatarComponent>(target, out var victim)
+            || !IsJackedIn(victim.Body, out var walked)
+            || walked != target)
         {
             return;
         }
@@ -247,8 +268,12 @@ public sealed partial class CyberspaceSystem
 
     private void OnProgramAfterInteract(Entity<CyberProgramComponent> ent, ref AfterInteractEvent args)
     {
-        if (args.Handled || args.Target is not { } target || !HasComp<CyberAvatarComponent>(target))
+        if (args.Handled
+            || args.Target is not { } target
+            || !HasComp<CyberAvatarComponent>(target) && !HasComp<IceComponent>(target))
+        {
             return;
+        }
 
         args.Handled = true;
         RunHeld(args.User, ent, target);

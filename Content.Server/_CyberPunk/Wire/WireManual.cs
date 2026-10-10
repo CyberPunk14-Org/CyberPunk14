@@ -189,6 +189,7 @@ public static class WireManual
             {
                 null => "",
                 "door" => " (only on door controllers)",
+                "ice" => " (only in ICE programs)",
                 _ => $" (only on {device}s)",
             };
             page.Append($"  {hook}{only}\n      {doc}\n");
@@ -317,8 +318,9 @@ public static class WireManual
         # ICE can do.
         #
         # The ICE lasts as long as this program runs. If a runner beats it, the
-        # program is halted, and someone has to run it again; or keep it running
-        # with a keeper (see examples/ice_keeper.wire on a deck).
+        # program is halted, and someone has to run it again. A computer's
+        # autorun file can run it at boot; `new NAME ice_basic` copies the ICE
+        # that comes with every computer.
 
         # Code at the top level runs once: this puts the ICE in cyberspace, on
         # this computer's pad. It arrives in time for the first tick.
@@ -338,6 +340,14 @@ public static class WireManual
         def become(new):
             state = new
             ice.mode(new)
+
+        # HOOK on_breach_signal: runs when a runner breaches one of the
+        # network's firewalls, with its tile as [x, y]. Rush there, engaging.
+        def on_breach_signal(at):
+            become("engaging")
+            where = at
+            last_seen = sys.clock()
+            ice.go_to(at[0], at[1])
 
         # HOOK tick: runs 30 times a second. Patrolling, it walks to random nodes.
         # A trace alert, or an intruder in sight, sets it searching where they

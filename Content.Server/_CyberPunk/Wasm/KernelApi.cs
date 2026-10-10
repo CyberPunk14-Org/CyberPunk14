@@ -20,8 +20,8 @@ namespace Content.Server._CyberPunk.Wasm;
 /// touches the world (sending packets, moving doors, flashing a device) is queued there, for the world to
 /// carry out after the machine's tick.
 ///
-/// ICE and the body (the <c>ice_</c> and <c>body_</c> functions) arrive with ICE and cyberware. Until then
-/// they're linked, so programs that use them still load, and return -1.
+/// The body (the <c>body_</c> functions) arrives with cyberware. Until then they're linked, so programs that use
+/// them still load, and return -1.
 /// </remarks>
 internal sealed class KernelApi
 {
@@ -57,6 +57,7 @@ internal sealed class KernelApi
         api.DefineDevices();
         api.DefineJobs();
         api.DefineDeck();
+        api.DefineIce();
         api.DefineLater();
         return api._linked;
     }
@@ -923,25 +924,92 @@ internal sealed class KernelApi
     }
 
     /// <summary>
-    /// ICE and the body, which arrive with ICE and cyberware. Linked now so programs that use
-    /// them load; each returns -1 (or does nothing) until then, as on a machine they don't work on.
+    /// ICE, run by a program on a computer: the world shows each program the ICE it runs before the tick, and
+    /// carries out its orders after. Every function but <c>ice_start</c> returns -1 for a program running none.
+    /// </summary>
+    private void DefineIce()
+    {
+        Def("ice_start", c =>
+        {
+            var io = Io(c);
+            if (io.Kind != DeviceKind.Computer)
+                return -1;
+
+            return io.IceViews.ContainsKey(io.Pid) || !io.IceStarts.Add(io.Pid) ? -2 : 0;
+        });
+
+        Def("ice_integrity", c => IceOf(c)?.Integrity ?? -1);
+        Def("ice_here", c => IceOf(c)?.Here ?? -1L);
+        Def("ice_nodes", (c, buf, cap) => IceOf(c) is { } view ? WriteIds(c, buf, cap, view.Nodes) : -1);
+        Def("ice_neighbours", (c, buf, cap) => IceOf(c) is { } view ? WriteIds(c, buf, cap, view.Neighbours) : -1);
+
+        Def("ice_go", (c, node) =>
+            IceOf(c) is { } view && view.Nodes.Contains((uint) node) ? IceOrder(c, IceOrderKind.Go, node) : -1);
+
+        Def("ice_chase", (c, runner) =>
+            IceOf(c) is { } view && view.Runners.Any(r => r.Id == runner) ? IceOrder(c, IceOrderKind.Chase, runner) : -1);
+
+        Def("ice_attack", (c, runner) =>
+            IceOf(c) is { } view && view.Runners.Any(r => r.Id == runner && r.InReach)
+                ? IceOrder(c, IceOrderKind.Attack, runner)
+                : -1);
+
+        Def("ice_runners", (c, buf, cap) =>
+        {
+            if (IceOf(c) is not { } view)
+                return -1;
+
+            var text = new StringBuilder();
+            foreach (var r in view.Runners)
+            {
+                text.Append($"{r.Id} {r.Node} {(r.Authorized ? 1 : 0)} {(r.InReach ? 1 : 0)} {r.X} {r.Y} {r.Name}\n");
+            }
+
+            return WriteText(c, buf, cap, text.ToString());
+        });
+
+        Def("ice_position", (c, buf, cap) => IceOf(c) is { } view ? WriteTile(c, buf, cap, (view.X, view.Y)) : -1);
+
+        Def("ice_alert", (c, buf, cap) => IceOf(c) is { } view
+            ? view.Alert is { } alert ? WriteTile(c, buf, cap, alert) : 0
+            : -1);
+
+        Def("ice_breach", (c, buf, cap) => Io(c).Breach is { } at ? WriteTile(c, buf, cap, at) : -1);
+
+        Def("ice_go_to", (c, x, y) => IceOf(c) != null ? IceOrder(c, IceOrderKind.GoTo, x, y) : -1);
+
+        Def("ice_mode", (c, mode) =>
+            IceOf(c) != null && mode is >= 0 and <= 2 ? IceOrder(c, IceOrderKind.Mode, mode) : -1);
+    }
+
+    private static IceView? IceOf(Caller caller)
+    {
+        var io = Io(caller);
+        return io.IceViews.GetValueOrDefault(io.Pid);
+    }
+
+    private static int IceOrder(Caller caller, IceOrderKind kind, int a, int b = 0)
+    {
+        var io = Io(caller);
+        io.IceOrders.Add(new IceOrder(io.Pid, kind, a, b));
+        return 0;
+    }
+
+    private static int WriteTile(Caller caller, int buf, int cap, (int X, int Y) tile)
+    {
+        var bytes = new byte[8];
+        BitConverter.TryWriteBytes(bytes, tile.X);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4), tile.Y);
+        WriteBytes(caller, buf, cap, bytes);
+        return 8;
+    }
+
+    /// <summary>
+    /// The body, which arrives with cyberware. Linked now so programs that use it load; each returns -1 (or does
+    /// nothing) until then, as on a machine it doesn't work on.
     /// </summary>
     private void DefineLater()
     {
-        Def("ice_here", _ => -1L);
-        Def("ice_start", _ => -1);
-        Def("ice_integrity", _ => -1);
-        Def("ice_nodes", (_, _, _) => -1);
-        Def("ice_neighbours", (_, _, _) => -1);
-        Def("ice_go", (_, _) => -1);
-        Def("ice_chase", (_, _) => -1);
-        Def("ice_runners", (_, _, _) => -1);
-        Def("ice_attack", (_, _) => -1);
-        Def("ice_position", (_, _, _) => -1);
-        Def("ice_alert", (_, _, _) => -1);
-        Def("ice_go_to", (_, _, _) => -1);
-        Def("ice_mode", (_, _) => -1);
-
         Def("body_vitals", (_, _, _) => -1);
         Def("body_alert", (_, _, _) => -1);
         Def("body_inject", _ => -1);

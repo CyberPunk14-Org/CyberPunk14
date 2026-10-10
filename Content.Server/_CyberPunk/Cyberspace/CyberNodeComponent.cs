@@ -21,6 +21,9 @@ public enum CyberNodeKind : byte
 
     /// <summary>A runner's deck, on a spur beside the machine it came in through.</summary>
     Deck,
+
+    /// <summary>A switch that shuts its pad to runners its reader doesn't pass.</summary>
+    Firewall,
 }
 
 /// <summary>

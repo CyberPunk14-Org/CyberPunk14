@@ -106,3 +106,19 @@
   - type: GuideHelp
     guides:
     - ComputerNetworks
+
+- type: entity
+  parent: NetworkHubBase
+  id: NetworkFirewall
+  name: network firewall
+  description: A switch that guards the machines behind it. Put it between a router and the rest of a network, and in cyberspace it shuts the way through to any runner whose ID its reader doesn't pass.
+  components:
+  - type: NetworkHub
+  - type: Firewall
+  - type: AccessReader
+  - type: Sprite
+    color: "#FFB3B8"
+  - type: GuideHelp
+    guides:
+    - ComputerNetworks
+    - Cyberspace

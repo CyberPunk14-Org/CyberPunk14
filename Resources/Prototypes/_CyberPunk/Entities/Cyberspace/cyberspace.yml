@@ -1,5 +1,5 @@
-# Things in cyberspace (CyberspaceSystem): the nodes on the pads of networked machines, and the barriers that
-# keep walkers to the paths.
+# Things in cyberspace (CyberspaceSystem): the nodes on the pads of networked machines, the barriers that keep
+# walkers to the paths, and the ICE that guards them.
 
 - type: entity
   id: CyberspaceBarrier
@@ -112,6 +112,62 @@
     state: triangle
     color: "#FFF24D"
 
+# A firewall's pad: a locked door filling it, which lets through only the runners whose ID passes the firewall's
+# reader, or who breached it.
+- type: entity
+  parent: CyberNodeBase
+  id: CyberNodeFirewall
+  categories: [ HideSpawnMenu ]
+  description: A firewall, shut like a locked door to anyone whose ID it doesn't pass. Stand at it to breach it.
+  components:
+  - type: Sprite
+    state: firewall
+    color: "#FF4D59"
+    scale: 3, 3
+  - type: CyberFirewallGate
+  - type: Physics
+    bodyType: Static
+  - type: Fixtures
+    fixtures:
+      gate:
+        shape:
+          !type:PhysShapeAabb
+          bounds: "-1.5,-1.5,1.5,1.5"
+        hard: true
+        layer:
+        - Impassable
+        - MidImpassable
+        - HighImpassable
+        - LowImpassable
+
+# ICE: a guard run by a program on one of the network's computers. Its colour shows how alert its program says it
+# is.
+- type: entity
+  id: CyberIce
+  name: ICE
+  description: Intrusion countermeasures, guarding this network.
+  categories: [ HideSpawnMenu ]
+  components:
+  - type: Ice
+  - type: Sprite
+    sprite: _CyberPunk/Cyberspace/node.rsi
+    drawdepth: Mobs
+    noRot: true
+    layers:
+    - state: ice
+      color: "#BF4DFF"
+      shader: unshaded
+      map: [ "enum.IceVisuals.Mode" ]
+  - type: Clickable
+  - type: Appearance
+  - type: GenericVisualizer
+    visuals:
+      enum.IceVisuals.Mode:
+        enum.IceVisuals.Mode:
+          Patrolling: { color: "#BF4DFF" }
+          Searching: { color: "#FFCC26" }
+          Engaging: { color: "#FF2633" }
+
 # A runner's virtual body: their mind walks it while their real body stays behind. It's a computer, their deck.
 # It takes the shape of their body, without the insides: it doesn't breathe, eat or feel the cold, and it bleeds
 # ghostlight. It shows, with all it wears and holds, in a glitching shade of its runner's colour.
@@ -155,11 +211,17 @@
         Walk the paths to find the machines on the network: each has a node on
         its pad, and the router's pad opens onto the bus that joins every
         network to the backbone. Use a node to open its machine; one your ID
-        doesn't open takes three seconds at its node to breach.
+        doesn't open takes three seconds at its node to breach. So does a
+        firewall, which shuts the way past it to anyone whose ID it doesn't pass.
 
-        `hold blade` puts your deck's weapon in your hand: use it on another
-        runner to strike them, until they're cut out of cyberspace. `hold ward`
-        is a shield that halves strikes on you for two seconds. Build your own
+        ICE guards the networks: violet while it patrols, yellow while it
+        searches and red when it comes for you. Three seconds in its sight is
+        enough. It leaves alone runners whose ID its computer passes.
+
+        `hold blade` puts your deck's weapon in your hand: use it on ICE or
+        another runner to strike them, until the ICE derezzes or the runner is
+        cut out of cyberspace. `hold ward` is a shield that halves strikes on
+        you for two seconds. Build your own
         with `new NAME deck`, then hold the program it builds (man deck).
 
         `push FILE` copies a file onto the computer whose node you stand at,

@@ -18,8 +18,11 @@ public static class SystemPrograms
     /// <summary>The deck's shield, a port of Switchboard's <c>wasm/system/ward</c>.</summary>
     public const string Ward = "ward";
 
+    /// <summary>The ICE that comes with every computer, a port of Switchboard's <c>wasm/system/ice_basic</c>.</summary>
+    public const string IceBasic = "ice_basic";
+
     /// <summary>Every system program's name.</summary>
-    public static readonly string[] Names = [Nano, Blade, Ward];
+    public static readonly string[] Names = [Nano, Blade, Ward, IceBasic];
 
     // Read once, before anything asks: hosts are made on several threads at once in tests.
     private static readonly Dictionary<string, string> Sources = Names.ToDictionary(name => name, Load);

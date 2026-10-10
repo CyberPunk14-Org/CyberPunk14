@@ -31,6 +31,7 @@
     <EmbeddedResource Include="_CyberPunk\Wasm\nano.wire" LogicalName="CyberPunk14.nano.wire" />
     <EmbeddedResource Include="_CyberPunk\Wasm\blade.wire" LogicalName="CyberPunk14.blade.wire" />
     <EmbeddedResource Include="_CyberPunk\Wasm\ward.wire" LogicalName="CyberPunk14.ward.wire" />
+    <EmbeddedResource Include="_CyberPunk\Wasm\ice_basic.wire" LogicalName="CyberPunk14.ice_basic.wire" />
   </ItemGroup>
   <Import Project="..\RobustToolbox\MSBuild\Robust.Properties.targets" />
   <Import Project="..\RobustToolbox\MSBuild\Robust.EntitySystemSubscriptionsGenerator.targets" />

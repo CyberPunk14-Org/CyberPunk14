@@ -20,7 +20,7 @@ namespace Content.Server._CyberPunk.Wire;
 /// <para>
 /// The program is the <see cref="WireRuntime"/> with the program's code after it, in WAT: each Wire function
 /// becomes a WebAssembly function taking and returning values, the top-level code runs from <c>start</c>, and
-/// <c>tick</c> and <c>on_door_request</c> are exported when the program defines them.
+/// <c>tick</c>, <c>on_door_request</c> and <c>on_breach_signal</c> are exported when the program defines them.
 /// </para>
 /// </remarks>
 public static class WireCompiler
@@ -156,6 +156,9 @@ public static class WireCompiler
             if (_funcs.TryGetValue("on_door_request", out var door))
                 wat.Append($"  (func (export \"on_door_request\") (result i32)\n    (global.set $depth (i32.const 0))\n    (call $truthy (call $f.{door.Index} (call $who))))\n");
 
+            if (_funcs.TryGetValue("on_breach_signal", out var breach))
+                wat.Append($"  (func (export \"on_breach_signal\")\n    (global.set $depth (i32.const 0))\n    (drop (call $f.{breach.Index} (call $tile (call $ice_breach (i32.const 16) (i32.const 8))))))\n");
+
             wat.Append("  (data $strings \"");
             foreach (var b in data)
             {
@@ -189,6 +192,7 @@ public static class WireCompiler
                 {
                     "tick" => (0, "def tick():"),
                     "on_door_request" => (1, "def on_door_request(who):"),
+                    "on_breach_signal" => (1, "def on_breach_signal(at):"),
                     _ => null,
                 };
 

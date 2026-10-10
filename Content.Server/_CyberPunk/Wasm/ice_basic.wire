@@ -1,0 +1,178 @@
+# ice_basic: the ICE that comes with every computer. `run ice_basic &` on one
+# of a network's computers puts ICE on its pad, guarding the network for as
+# long as this runs; run it again for more.
+#
+# It patrols from node to node. An intruder (a runner whose ID the computer
+# doesn't pass) in its sight sets it searching; three seconds of them in sight
+# and it engages: chases them through the network and strikes them when it
+# can. Out of sight for eight seconds, it goes back to searching where it
+# last saw them, and after twelve seconds with nobody found, to patrolling. A
+# completed trace sends it searching where the trace says the intruder is. A
+# breached firewall sends it there at once, engaging: it strikes and chases
+# whoever it finds when it arrives, and searches if it finds nobody.
+#
+# It is a Wire program like any other: `new myice ice_basic` copies it to
+# change.
+
+SPOT = 3000          # milliseconds in sight before it engages
+SEARCH = 12000       # searching with nobody found, before it patrols again
+LOST = 8000          # engaging with its target out of sight, before it searches
+LEG = 3000           # longest walk to one spot while searching
+RADIUS = 4           # how far from where it last saw them it searches, in tiles
+PAUSE = 800          # pause at each node on patrol
+PATROL_LEG = 12000   # longest walk to one node on patrol, before it gives up
+RUSH = 30000         # longest run to a breached firewall, before it searches
+
+state = "patrolling"
+target = None        # the intruder it is after
+in_view_since = None
+last_known = None    # where it last saw them, as [x, y]
+last_seen = 0
+goal = None          # the spot it is walking to while searching
+patrol_node = None
+pause_until = None
+leg_start = 0
+started = False
+missing = 0          # ticks the ICE has not been there
+
+if net.address() == None:
+    print("ice_basic: waiting for a network")
+
+# ICE needs the computer's pad in cyberspace, which it has once it's on a
+# network.
+def begin():
+    started = True
+    if ice.start():
+        print("ice_basic: starting ICE")
+    else:
+        print("ice_basic: ICE only runs on a computer on a network")
+        sys.exit(1)
+
+def enter(new):
+    if new != state:
+        ice.mode(new)
+    state = new
+    goal = None
+    patrol_node = None
+    pause_until = None
+    leg_start = sys.clock()
+
+def go(spot):
+    goal = spot
+    ice.go_to(spot[0], spot[1])
+
+def arrived():
+    at = ice.position()
+    return abs(at[0] - goal[0]) <= 1 and abs(at[1] - goal[1]) <= 1
+
+def search(now):
+    if goal == None:
+        go(last_known)
+        return
+    if arrived() or now - leg_start > LEG:
+        leg_start = now
+        dx = sys.random(2 * RADIUS + 1) - RADIUS
+        dy = sys.random(2 * RADIUS + 1) - RADIUS
+        go([last_known[0] + dx, last_known[1] + dy])
+
+def patrol(now):
+    here = ice.here()
+    stuck = now - leg_start > PATROL_LEG
+    if patrol_node != None and here != patrol_node and not stuck:
+        return
+    if not stuck:
+        if pause_until == None:
+            pause_until = now + PAUSE
+            return
+        if now < pause_until:
+            return
+    pause_until = None
+    leg_start = now
+    options = []
+    for node in ice.nodes():
+        if node != here:
+            options.append(node)
+    if len(options) == 0:
+        patrol_node = None
+        return
+    patrol_node = options[sys.random(len(options))]
+    ice.go(patrol_node)
+
+# HOOK on_breach_signal: runs when a runner breaches one of this network's
+# firewalls, with the firewall's tile as [x, y].
+def on_breach_signal(at):
+    enter("engaging")
+    target = None
+    last_known = at
+    last_seen = sys.clock()
+    go(at)
+
+def tick():
+    if not started:
+        if net.address() != None:
+            begin()
+        return
+    if ice.position() == None:
+        missing += 1
+        if missing > 2:
+            print("ice_basic: the ICE never came")
+            sys.exit(1)
+        return
+    missing = 0
+    now = sys.clock()
+
+    pick = None
+    for runner in ice.runners():
+        if not runner.authorized:
+            if runner.id == target or pick == None:
+                pick = runner
+
+    alert = ice.alert()
+    if alert != None and state != "engaging":
+        enter("searching")
+        target = None
+        in_view_since = None
+        last_known = alert
+        last_seen = now
+
+    if state == "patrolling":
+        if pick == None:
+            patrol(now)
+        else:
+            enter("searching")
+            target = pick.id
+            in_view_since = now
+            last_known = [pick.x, pick.y]
+            last_seen = now
+    elif state == "searching":
+        if pick == None:
+            in_view_since = None
+            if now - last_seen > SEARCH:
+                target = None
+                enter("patrolling")
+            else:
+                search(now)
+        else:
+            if pick.id != target or in_view_since == None:
+                target = pick.id
+                in_view_since = now
+            last_known = [pick.x, pick.y]
+            last_seen = now
+            if now - in_view_since >= SPOT:
+                enter("engaging")
+                ice.chase(target)
+            elif goal == None or goal[0] != pick.x or goal[1] != pick.y:
+                go(last_known)
+    else:
+        if pick != None:
+            target = pick.id
+            last_known = [pick.x, pick.y]
+            last_seen = now
+            if pick.in_reach:
+                ice.attack(pick.id)
+            ice.chase(pick.id)
+        elif target == None and goal != None and not arrived() and now - leg_start < RUSH:
+            last_seen = now     # still on its way to a breach
+        elif now - last_seen > LOST:
+            enter("searching")
+            last_seen = now
