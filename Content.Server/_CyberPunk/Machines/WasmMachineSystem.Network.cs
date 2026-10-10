@@ -1,4 +1,5 @@
 using System.Linq;
+using Content.Server._CyberPunk.Cyberspace;
 using Content.Server._CyberPunk.Network;
 using Content.Server._CyberPunk.Wasm;
 using Content.Server.NodeContainer.EntitySystems;
@@ -474,6 +475,56 @@ public sealed partial class WasmMachineSystem
                     {
                         if (seen.Add(next))
                             queue.Enqueue(next);
+                    }
+                }
+            }
+
+            // Hub-to-host links alone lose the cable sides of a firewall: hosts served only by that
+            // firewall would each look like an isolated zone. Join the non-firewall members of each
+            // adjoining cable segment too, without flooding through any hub into another segment.
+            var seenCable = new HashSet<Node>();
+            foreach (var firewall in net.Hubs.Where(h => HasComp<FirewallComponent>(h)))
+            {
+                var hub = Comp<NetworkHubComponent>(firewall);
+                if (!_nodes.TryGetNode(firewall, hub.Node, out DataHubNode? start))
+                    continue;
+
+                foreach (var port in start.ReachableNodes)
+                {
+                    if (!HasComp<DataCableComponent>(port.Owner) || !seenCable.Add(port))
+                        continue;
+
+                    var side = new HashSet<EntityUid>();
+                    var queue = new Queue<Node>();
+                    queue.Enqueue(port);
+                    while (queue.TryDequeue(out var cable))
+                    {
+                        foreach (var device in _cableDevices.GetValueOrDefault(cable.Owner) ?? new List<EntityUid>())
+                        {
+                            if (hosts.Contains(device))
+                                side.Add(device);
+                        }
+
+                        foreach (var next in cable.ReachableNodes)
+                        {
+                            if (next is DataHubNode)
+                            {
+                                if (net.Hubs.Contains(next.Owner) && !HasComp<FirewallComponent>(next.Owner))
+                                    side.Add(next.Owner);
+                            }
+                            else if (hosts.Contains(next.Owner))
+                                side.Add(next.Owner);
+                            else if (HasComp<DataCableComponent>(next.Owner) && seenCable.Add(next))
+                                queue.Enqueue(next);
+                        }
+                    }
+
+                    // Prefer a hub, preserving the existing links when this side has one. Otherwise a
+                    // spanning star is enough to represent the cable, rather than a quadratic clique.
+                    var ordered = side.OrderBy(m => net.Hubs.Contains(m) ? 0 : 1).ThenBy(m => m).ToList();
+                    for (var i = 1; i < ordered.Count; i++)
+                    {
+                        Link(ordered[0], ordered[i]);
                     }
                 }
             }

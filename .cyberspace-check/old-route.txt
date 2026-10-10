@@ -1,0 +1,151 @@
+    /// <summary>
+    /// Routes every link as a corridor of cells from pad to pad, around other pads and the corridors on the other
+    /// side of a firewall. Returns the sides each cell's paths leave by.
+    /// </summary>
+    /// <remarks>
+    /// With firewalls, one side's corridor can cut off a link on the other, so links through firewalls go first
+    /// and, if a link still can't be routed, they're tried again in other orders.
+    /// </remarks>
+    private static Dictionary<(int, int), bool[]> Route(int width, int height, RegionGraph graph, ref CyberRng rng)
+    {
+        var order = Enumerable.Range(0, graph.Links.Count)
+            .OrderBy(l => graph.Zones is { } z && (z[graph.Links[l].A] < 0 || z[graph.Links[l].B] < 0) ? 0 : 1)
+            .ToList();
+
+        Dictionary<(int, int), bool[]>? best = null;
+        var bestMissed = int.MaxValue;
+        for (var attempt = 0; attempt < Attempts; attempt++)
+        {
+            var directions = WfcWave.Directions.ToList();
+            if (attempt > 0)
+                rng.Shuffle(directions);
+            var sides = Route(width, height, graph, order, directions, out var missed);
+            if (missed < bestMissed)
+                (best, bestMissed) = (sides, missed);
+
+            if (missed == 0)
+                break;
+
+            rng.Shuffle(order);
+        }
+
+        return best!;
+    }
+
+    private static Dictionary<(int, int), bool[]> Route(int width, int height, RegionGraph graph, List<int> order,
+        List<(int X, int Y)> directions, out int missed)
+    {
+        missed = 0;
+        var sides = new Dictionary<(int, int), bool[]>();
+        bool[] SidesOf((int, int) cell)
+        {
+            if (!sides.TryGetValue(cell, out var s))
+                sides[cell] = s = new bool[4];
+
+            return s;
+        }
+
+        var pads = graph.Pads.Select(p => p.Slot).ToHashSet();
+        foreach (var slot in pads)
+        {
+            SidesOf(slot);
+        }
+
+        // Pads on the same cable side are traversable too. Treating them as obstacles can strand a host
+        // behind its neighbours, even though walking through those neighbours is allowed.
+        var sideOf = new Dictionary<(int, int), int>();
+        if (graph.Zones is { } padZones)
+        {
+            for (var i = 0; i < graph.Pads.Count; i++)
+            {
+                if (padZones[i] >= 0)
+                    sideOf[graph.Pads[i].Slot] = padZones[i];
+            }
+        }
+        int ZoneOf(int link)
+        {
+            var (a, b) = graph.Links[link];
+            return graph.Zones is { } zones
+                ? zones[a] >= 0 ? zones[a] : zones[b] >= 0 ? zones[b] : -2 - link
+                : 0;
+        }
+
+        // Finish a cable side before another side can cut its still-disconnected branches apart.
+        var grouped = order.GroupBy(ZoneOf).SelectMany(group => group.OrderBy(link =>
+            graph.Zones is { } z && (z[graph.Links[link].A] < 0 || z[graph.Links[link].B] < 0) ? 0 : 1));
+        foreach (var link in grouped)
+        {
+            var (a, b) = graph.Links[link];
+            var (from, to) = (graph.Pads[a].Slot, graph.Pads[b].Slot);
+            if (from == to)
+                continue;
+
+            // A link between two firewalls is a side of its own.
+            var zone = ZoneOf(link);
+
+            // Prefer joining an existing corridor on this side over carving another one. In particular,
+            // many hosts behind a firewall should share an entrance, not consume all four of its sides.
+            var came = new Dictionary<(int, int), (int, int)>();
+            var costs = new Dictionary<(int, int), int> { [from] = 0 };
+            var queue = new PriorityQueue<(int X, int Y), (int Cost, int Order)>();
+            var sequence = 0;
+            queue.Enqueue(from, (0, sequence++));
+            var found = false;
+            while (queue.TryDequeue(out var at, out var priority))
+            {
+                if (priority.Cost != costs[at])
+                    continue;
+
+                if (at == to)
+                {
+                    found = true;
+                    break;
+                }
+
+                foreach (var (dx, dy) in directions)
+                {
+                    var n = (at.X + dx, at.Y + dy);
+                    if (n.Item1 < 0 || n.Item2 < 0 || n.Item1 >= width || n.Item2 >= height)
+                        continue;
+
+                    var owned = sideOf.TryGetValue(n, out var side);
+                    if (n == from || owned && side != zone)
+                        continue;
+
+                    // Never transit a firewall or an unrelated pad.
+                    if (pads.Contains(n) && n != to && (!owned || side != zone))
+                        continue;
+
+                    var cost = priority.Cost + (owned ? 0 : 1);
+                    if (costs.TryGetValue(n, out var previous) && previous <= cost)
+                        continue;
+
+                    costs[n] = cost;
+                    came[n] = at;
+                    queue.Enqueue(n, (cost, sequence++));
+                }
+            }
+
+            if (!found)
+            {
+                missed++;
+                continue;
+            }
+
+            var back = to;
+            while (back != from)
+            {
+                var prev = came[back];
+                var d = Array.FindIndex(WfcWave.Directions, dir => prev.Item1 + dir.X == back.Item1 && prev.Item2 + dir.Y == back.Item2);
+                SidesOf(prev)[d] = true;
+                SidesOf(back)[WfcWave.Opposite(d)] = true;
+                if (!pads.Contains(back))
+                    sideOf[back] = zone;
+
+                back = prev;
+            }
+        }
+
+        return sides;
+    }
+

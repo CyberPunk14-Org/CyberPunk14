@@ -175,6 +175,74 @@ public sealed class CyberspaceGenerationTest
     }
 
     /// <summary>
+    /// Hosts sharing a cable behind a firewall stay connected even with its entire pad blocked.
+    /// Each cable side may contain more hosts than the firewall has entrances.
+    /// </summary>
+    [TestCase(2, 6)]
+    [TestCase(3, 6)]
+    [TestCase(4, 6)]
+    public void FirewallSidesStayConnected(int sides, int hostsPerSide)
+    {
+        var shape = RegionShape.For(hostsPerSide * sides, 1);
+        var graph = new RegionGraph
+        {
+            Pads = { (shape.RouterSlot, PadKind.Router), (shape.SwitchSlots[0], PadKind.Switch) },
+            Links = { (0, 1) },
+            Zones = new List<int> { 0, -1 },
+            Gate = 0,
+        };
+        for (var side = 0; side < sides; side++)
+        {
+            var first = graph.Pads.Count;
+            for (var host = 0; host < hostsPerSide; host++)
+            {
+                var pad = graph.Pads.Count;
+                graph.Pads.Add((shape.HostSlots[side * hostsPerSide + host], PadKind.Host));
+                graph.Zones.Add(side);
+                graph.Links.Add((1, pad));
+                if (side == 0)
+                    graph.Links.Add((0, pad));
+                else if (pad != first)
+                    graph.Links.Add((first, pad));
+            }
+        }
+
+        var width = shape.Width * CyberLayout.Cell;
+        int At(int pad) => (graph.Pads[pad].Slot.Y * CyberLayout.Cell + 2) * width
+                          + graph.Pads[pad].Slot.X * CyberLayout.Cell + 2;
+        for (var seed = 0UL; seed < 20; seed++)
+        {
+            Assert.That(CyberRegionGenerator.TryLayout(seed, shape, graph, out var layout), Is.True,
+                $"layout for {sides} sides, seed {seed}");
+            var original = graph;
+            graph = layout;
+            var tiles = CyberRegionGenerator.Generate(seed, shape, graph);
+            var open = Flood(tiles, width, At(0));
+            Assert.That(Enumerable.Range(0, graph.Pads.Count).All(p => open[At(p)]),
+                $"all pads reachable with firewall open, {sides} sides, seed {seed}");
+
+            // The physical gate covers the central 3x3 tiles, not the entire cell.
+            for (var dy = -1; dy <= 1; dy++)
+            for (var dx = -1; dx <= 1; dx++)
+                tiles[At(1) + dy * width + dx] = CyberFloor.Void;
+
+            for (var side = 0; side < sides; side++)
+            {
+                var reached = Flood(tiles, width, At(2 + side * hostsPerSide));
+                for (var pad = 0; pad < graph.Pads.Count; pad++)
+                {
+                    if (pad == 1)
+                        continue;
+
+                    Assert.That(reached[At(pad)], Is.EqualTo(graph.Zones[pad] == side),
+                        $"side {side}, pad {pad}, {sides} sides, seed {seed}");
+                }
+            }
+            graph = original;
+        }
+    }
+
+    /// <summary>
     /// Regions go along the street nearest the hub first, each touching the street and none overlapping, and a
     /// region given back leaves a gap for the next that fits.
     /// </summary>

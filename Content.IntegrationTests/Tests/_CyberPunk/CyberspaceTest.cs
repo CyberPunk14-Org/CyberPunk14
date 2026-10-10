@@ -967,6 +967,81 @@ public sealed class CyberspaceTest : GameTest
     }
 
     /// <summary>
+    /// A firewall joins cable segments, not individual hosts. Closing it must leave every cable side
+    /// navigable internally, including sides with no ordinary switch and more than four machines.
+    /// </summary>
+    [TestCase(2, 6)]
+    [TestCase(3, 2)]
+    [TestCase(4, 2)]
+    public async Task FirewallCableSidesStayNavigable(int sideCount, int hostsPerSide)
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+        var sides = new List<List<EntityUid>>();
+        EntityUid firewall = default, router = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = -7; x <= 7; x++)
+            for (var y = -7; y <= 7; y++)
+                mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+
+            firewall = Place("NetworkFirewall", 0, 0);
+            router = Place("NetworkRouter", -6, -1);
+            power.SetNeedsPower(firewall, false);
+            power.SetNeedsPower(router, false);
+            var directions = new[] { new Vector2i(-1, 0), new Vector2i(1, 0), new Vector2i(0, 1), new Vector2i(0, -1) };
+            for (var side = 0; side < sideCount; side++)
+            {
+                var members = new List<EntityUid>();
+                sides.Add(members);
+                for (var step = 1; step <= 6; step++)
+                {
+                    var tile = directions[side] * step;
+                    Place("CableData", tile.X, tile.Y);
+                    if (step <= hostsPerSide)
+                    {
+                        var host = Place("ComputerProgrammable", tile.X, tile.Y);
+                        power.SetNeedsPower(host, false);
+                        members.Add(host);
+                    }
+                }
+            }
+            sides[0].Add(router);
+        });
+
+        await Pair.RunTicksSync(30);
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(cyberspace.NodeOf(firewall), Is.Not.Null);
+            var centre = Tile(cyberspace.NodeOf(firewall)!.Value);
+            var blocked = new HashSet<Vector2i>();
+            for (var dy = -1; dy <= 1; dy++)
+            for (var dx = -1; dx <= 1; dx++)
+                blocked.Add(centre + new Vector2i(dx, dy));
+
+            var from = Tile(cyberspace.NodeOf(router)!.Value);
+            for (var side = 0; side < sides.Count; side++)
+            {
+                var origin = Tile(cyberspace.NodeOf(sides[side][0])!.Value);
+                for (var other = 0; other < sides.Count; other++)
+                foreach (var host in sides[other])
+                {
+                    Assert.That(cyberspace.NodeOf(host), Is.Not.Null);
+                    var target = Tile(cyberspace.NodeOf(host)!.Value);
+                    Assert.That(Reaches(cyberspace, from, target), $"open firewall reaches {host}");
+                    Assert.That(Reaches(cyberspace, origin, target, blocked), Is.EqualTo(side == other),
+                        $"closed firewall, side {side} to side {other}, host {host}");
+                }
+            }
+        });
+    }
+
+    /// <summary>
     /// The ICE a computer's program runs, or none.
     /// </summary>
     private EntityUid IceOf(EntityUid computer)
