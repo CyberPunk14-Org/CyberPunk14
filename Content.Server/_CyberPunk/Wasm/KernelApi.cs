@@ -829,7 +829,8 @@ internal sealed class KernelApi
     /// </summary>
     private void DefineDeck()
     {
-        Def("deck_integrity", c => Io(c).DeckView?.Integrity ?? -1);
+        Def("deck_health", c => Io(c).DeckView?.Health ?? -1);
+        Def("deck_integrity", c => Io(c).DeckView?.Health ?? -1);
 
         Def("deck_status", c => Io(c).DeckView is { } view
             ? (view.Warded ? 1 : 0) + (view.StrikeReady ? 2 : 0) + (view.WardReady ? 4 : 0)
@@ -843,7 +844,7 @@ internal sealed class KernelApi
             var text = new StringBuilder();
             foreach (var t in view.Targets)
             {
-                text.Append($"{t.Id} {(t.Ice ? "ice" : "runner")} {t.Integrity} {(t.InReach ? 1 : 0)} {t.Distance} {t.Name}\n");
+                text.Append($"{t.Id} {(t.Ice ? "ice" : "runner")} {t.Health} {(t.InReach ? 1 : 0)} {t.Distance} {t.Name}\n");
             }
 
             return WriteText(c, buf, cap, text.ToString());
@@ -938,7 +939,8 @@ internal sealed class KernelApi
             return io.IceViews.ContainsKey(io.Pid) || !io.IceStarts.Add(io.Pid) ? -2 : 0;
         });
 
-        Def("ice_integrity", c => IceOf(c)?.Integrity ?? -1);
+        Def("ice_health", c => IceOf(c)?.Health ?? -1);
+        Def("ice_integrity", c => IceOf(c)?.Health ?? -1);
         Def("ice_here", c => IceOf(c)?.Here ?? -1L);
         Def("ice_nodes", (c, buf, cap) => IceOf(c) is { } view ? WriteIds(c, buf, cap, view.Nodes) : -1);
         Def("ice_neighbours", (c, buf, cap) => IceOf(c) is { } view ? WriteIds(c, buf, cap, view.Neighbours) : -1);
@@ -966,6 +968,28 @@ internal sealed class KernelApi
             }
 
             return WriteText(c, buf, cap, text.ToString());
+        });
+
+        Def("ice_runner_down", (c, runner) =>
+        {
+            if (IceOf(c) is not { } view)
+                return -1;
+
+            foreach (var r in view.Runners)
+            {
+                if (r.Id == runner)
+                    return r.Down ? 1 : 0;
+            }
+
+            return -1;
+        });
+
+        Def("ice_random_tile", (c, buf, cap) =>
+        {
+            if (IceOf(c) is not { } view)
+                return -1;
+
+            return view.RandomTile is { } tile ? WriteTile(c, buf, cap, tile) : 0;
         });
 
         Def("ice_position", (c, buf, cap) => IceOf(c) is { } view ? WriteTile(c, buf, cap, (view.X, view.Y)) : -1);

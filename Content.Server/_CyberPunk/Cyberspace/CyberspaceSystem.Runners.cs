@@ -304,7 +304,6 @@ public sealed partial class CyberspaceSystem
         _rejuvenate.PerformRejuvenate(avatar);
         if (TryComp<CyberAvatarComponent>(avatar, out var comp))
         {
-            comp.Integrity = MaxIntegrity;
             comp.StrikeReadyAt = comp.WardUntil = comp.WardReadyAt = TimeSpan.Zero;
         }
 
@@ -383,8 +382,11 @@ public sealed partial class CyberspaceSystem
         if (args.NewMobState != MobState.Dead || !IsJackedIn(ent.Comp.Body, out var avatar) || avatar != ent.Owner)
             return;
 
+        // A practice grid is nobody's to die in: it costs the body behind nothing.
+        var practice = TryComp<NetrunnerComponent>(ent.Comp.Body, out var runner) && runner.JackedIn?.Practice != null;
+
         JackOut(ent.Comp.Body, Loc.GetString("cyberspace-avatar-died"), true);
-        if (TryComp<StaminaComponent>(ent.Comp.Body, out var stamina))
+        if (!practice && TryComp<StaminaComponent>(ent.Comp.Body, out var stamina))
             _stamina.TakeStaminaDamage(ent.Comp.Body, stamina.CritThreshold, stamina, ignoreResist: true);
     }
 

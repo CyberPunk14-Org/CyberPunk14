@@ -2,6 +2,7 @@ using System.Linq;
 using Content.Server._CyberPunk.Machines;
 using Content.Server._CyberPunk.Wasm;
 using Content.Shared.Access.Components;
+using Content.Shared.Damage;
 using Content.Shared.Hands.Components;
 using Content.Shared.Interaction;
 using Content.Shared.Interaction.Events;
@@ -20,11 +21,11 @@ public sealed partial class CyberspaceSystem
 {
     [Dependency] private EntityLookupSystem _lookup = default!;
 
-    /// <summary>A runner's integrity when they jack in.</summary>
-    public const int MaxIntegrity = 100;
+    /// <summary>Health reported for a creature with no death threshold to read; real creatures use their own.</summary>
+    public const int FallbackHealth = 100;
 
-    /// <summary>What one strike of a deck takes, or half that through a ward.</summary>
-    public const int DeckDamage = 25;
+    /// <summary>What one strike takes from a virtual body, or half that through a ward.</summary>
+    public static readonly DamageSpecifier StrikeDamage = new() { DamageDict = { ["Slash"] = 25 } };
 
     /// <summary>How close a deck must be to strike, in tiles.</summary>
     public const float StrikeReach = 1.25f;
@@ -84,14 +85,14 @@ public sealed partial class CyberspaceSystem
                 targets.Add(new DeckTarget(GetNetEntity(other).Id,
                     false,
                     Name(other),
-                    other.Comp.Integrity,
+                    HealthOf(other.Owner),
                     distance <= StrikeReach,
                     (int) distance));
             }
 
             targets.Sort((a, b) => a.Distance != b.Distance ? a.Distance.CompareTo(b.Distance) : a.Id.CompareTo(b.Id));
             _machines.SetDeckView(deck.Owner,
-                new DeckView(deck.Comp.Integrity,
+                new DeckView(HealthOf(deck.Owner),
                     now < deck.Comp.WardUntil,
                     now >= deck.Comp.StrikeReadyAt,
                     now >= deck.Comp.WardReadyAt,
@@ -130,8 +131,9 @@ public sealed partial class CyberspaceSystem
     }
 
     /// <summary>
-    /// Strikes ICE or another runner in reach, by the id their deck's programs know them by. Runners can strike
-    /// anyone.
+    /// Strikes ICE or another runner in reach, by the id their deck's programs know them by. A strike is
+    /// physical: it does real damage to the virtual body it lands on, which bleeds and can die from it. Runners
+    /// can strike anyone.
     /// </summary>
     private void Strike(Entity<CyberAvatarComponent> ent, int id)
     {
@@ -159,17 +161,18 @@ public sealed partial class CyberspaceSystem
         }
 
         ent.Comp.StrikeReadyAt = now + StrikeCooldown;
-        var damage = now < victim.WardUntil ? DeckDamage / 2 : DeckDamage;
-        victim.Integrity = Math.Max(0, victim.Integrity - damage);
-        if (victim.Integrity == 0)
+        var health = LandStrike(ent.Owner, (target.Value, victim));
+        if (health <= 0)
         {
-            JackOut(victim.Body, Loc.GetString("cyberspace-cut-down"), true);
             _popup.PopupEntity(Loc.GetString("cyberspace-strike-cut-out", ("target", target.Value)), ent, ent);
             return;
         }
 
-        _popup.PopupEntity(Loc.GetString("cyberspace-strike", ("target", target.Value), ("integrity", victim.Integrity)), ent, ent);
-        _popup.PopupEntity(Loc.GetString("cyberspace-struck", ("striker", ent.Owner), ("integrity", victim.Integrity)),
+        var warded = now < victim.WardUntil;
+        _popup.PopupEntity(
+            Loc.GetString(warded ? "cyberspace-strike-warded" : "cyberspace-strike",
+                ("target", target.Value), ("health", health)), ent, ent);
+        _popup.PopupEntity(Loc.GetString("cyberspace-struck", ("striker", ent.Owner), ("health", health)),
             target.Value,
             target.Value);
     }

@@ -24,9 +24,16 @@ public sealed partial class IceComponent : Component
     [ViewVariables]
     public int? Practice;
 
-    /// <summary>What runners' strikes have left of it: at none it derezzes.</summary>
+    /// <summary>Who last struck it, for the note its program gets when it derezzes.</summary>
     [ViewVariables]
-    public int Integrity = CyberspaceSystem.MaxIntegrity;
+    public EntityUid? LastStriker;
+
+    /// <summary>
+    /// The tile it's stepping onto next while it has somewhere to go: what another ICE reads to tell a head-on
+    /// meeting, so the two can swap rather than wait on each other.
+    /// </summary>
+    [ViewVariables]
+    public (int X, int Y)? Next;
 
     /// <summary>When it can strike again.</summary>
     [ViewVariables]

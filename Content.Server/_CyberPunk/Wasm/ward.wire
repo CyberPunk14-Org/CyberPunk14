@@ -4,7 +4,7 @@
 #
 # It is a Wire program like any other: `new myward ward` copies it to change.
 
-if deck.integrity() == None:
+if deck.health() == None:
     print("ward: only runs on a deck in cyberspace")
     sys.exit(1)
 elif deck.ward():

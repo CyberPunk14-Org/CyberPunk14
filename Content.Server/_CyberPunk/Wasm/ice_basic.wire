@@ -2,11 +2,13 @@
 # of a network's computers puts ICE on its pad, guarding the network for as
 # long as this runs; run it again for more.
 #
-# It patrols from node to node. An intruder (a runner whose ID the computer
+# It wanders the layer, patrolling to a random tile at a time. An intruder (a
+# runner whose ID the computer
 # doesn't pass) in its sight sets it searching; three seconds of them in sight
 # and it engages: chases them through the network and strikes them when it
 # can. Out of sight for eight seconds, it goes back to searching where it
 # last saw them, and after twelve seconds with nobody found, to patrolling. A
+# runner it has knocked into crit is left alone: it is out of the fight. A
 # completed trace sends it searching where the trace says the intruder is. A
 # breached firewall sends it there at once, engaging: it strikes and chases
 # whoever it finds when it arrives, and searches if it finds nobody.
@@ -19,8 +21,8 @@ SEARCH = 12000       # searching with nobody found, before it patrols again
 LOST = 8000          # engaging with its target out of sight, before it searches
 LEG = 3000           # longest walk to one spot while searching
 RADIUS = 4           # how far from where it last saw them it searches, in tiles
-PAUSE = 800          # pause at each node on patrol
-PATROL_LEG = 12000   # longest walk to one node on patrol, before it gives up
+PAUSE = 800          # pause at each spot on patrol
+PATROL_LEG = 12000   # longest walk to one spot on patrol, before it gives up
 RUSH = 30000         # longest run to a breached firewall, before it searches
 
 state = "patrolling"
@@ -28,8 +30,7 @@ target = None        # the intruder it is after
 in_view_since = None
 last_known = None    # where it last saw them, as [x, y]
 last_seen = 0
-goal = None          # the spot it is walking to while searching
-patrol_node = None
+goal = None          # the spot it is walking to
 pause_until = None
 leg_start = 0
 started = False
@@ -53,7 +54,6 @@ def enter(new):
         ice.mode(new)
     state = new
     goal = None
-    patrol_node = None
     pause_until = None
     leg_start = sys.clock()
 
@@ -76,9 +76,8 @@ def search(now):
         go([last_known[0] + dx, last_known[1] + dy])
 
 def patrol(now):
-    here = ice.here()
     stuck = now - leg_start > PATROL_LEG
-    if patrol_node != None and here != patrol_node and not stuck:
+    if goal != None and not arrived() and not stuck:
         return
     if not stuck:
         if pause_until == None:
@@ -88,15 +87,10 @@ def patrol(now):
             return
     pause_until = None
     leg_start = now
-    options = []
-    for node in ice.nodes():
-        if node != here:
-            options.append(node)
-    if len(options) == 0:
-        patrol_node = None
+    spot = ice.random_tile()
+    if spot == None:
         return
-    patrol_node = options[sys.random(len(options))]
-    ice.go(patrol_node)
+    go(spot)
 
 # HOOK on_breach_signal: runs when a runner breaches one of this network's
 # firewalls, with the firewall's tile as [x, y].
@@ -123,7 +117,8 @@ def tick():
 
     pick = None
     for runner in ice.runners():
-        if not runner.authorized:
+        # A runner knocked into crit is out of the fight: leave them be.
+        if not runner.authorized and not ice.runner_down(runner.id):
             if runner.id == target or pick == None:
                 pick = runner
 
@@ -171,6 +166,11 @@ def tick():
             if pick.in_reach:
                 ice.attack(pick.id)
             ice.chase(pick.id)
+        elif target != None and ice.runner_down(target):
+            # Its quarry is down: that is enough. Go looking again.
+            enter("searching")
+            target = None
+            last_seen = now
         elif target == None and goal != None and not arrived() and now - leg_start < RUSH:
             last_seen = now     # still on its way to a breach
         elif now - last_seen > LOST:
