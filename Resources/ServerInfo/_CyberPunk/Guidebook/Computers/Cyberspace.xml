@@ -18,16 +18,16 @@
 
   ## Programs in hand
   Type [mono]hold FILE[/mono] at your deck to put a program in your virtual hand. Use it in your hand to run it on your deck, or use it on ICE or another runner to run it at them. Drop it and it's gone, though the file stays on your deck. Only one held program runs at a time.
-  - [mono]hold blade[/mono]: your deck's weapon. Each strike takes a quarter of a runner's or ICE's [bold]integrity[/bold] (an eighth of a runner's through a ward), every two-thirds of a second, within reach. A runner with none left is cut out of cyberspace, with dumpshock; ICE derezzes. Used in your hand, it goes for the nearest ICE. It doesn't move you, so walk into reach yourself.
+  - [mono]hold blade[/mono]: your deck's weapon. Each strike does real damage to a runner's virtual body or an ICE creature (half as much through a ward), every two-thirds of a second, within reach. A runner whose body it kills is cut out of cyberspace, with dumpshock; ICE it kills derezzes. Used in your hand, it goes for the nearest ICE. It doesn't move you, so walk into reach yourself.
   - [mono]hold ward[/mono]: halves the strikes on you for two seconds, and can go up again six seconds later.
   - Write your own with [mono]new NAME deck[/mono], and read blade's or ward's with [mono]new NAME blade[/mono]. [mono]man deck[/mono] lists what a deck's programs can do.
 
   ## ICE
-  [bold]ICE[/bold] guards a network: a spinning shape walking its paths, run by a program on one of its computers. A security computer starts its ICE when it boots, and any computer can start more with [mono]run ice_basic &amp;[/mono]. ICE keeps to its network's region unless it's engaging a runner, when it follows them anywhere and comes back once it gives up. It leaves alone any runner whose ID the computer running it passes. Its colour says what it's doing:
-  - [color=#BF4DFF]violet[/color]: patrolling from node to node. Three seconds in its sight (9 tiles along a clear path) and it comes for you.
+  [bold]ICE[/bold] guards a network: a creature walking its paths, with real health of its own, run by a program on one of its computers. A security computer starts its ICE when it boots, and any computer can start more with [mono]run ice_basic &amp;[/mono]. ICE keeps to its network's region unless it's engaging a runner, when it follows them anywhere and comes back once it gives up. It leaves alone any runner whose ID the computer running it passes. Its colour says what it's doing:
+  - [color=#BF4DFF]violet[/color]: patrolling, wandering the paths a tile at a time. Three seconds in its sight (9 tiles along a clear path) and it comes for you.
   - [color=#FFCC26]yellow[/color]: searching for you where it last saw you.
-  - [color=#FF2633]red[/color]: engaging. It chases you anywhere, even out of its network, and strikes when you're within reach: a quarter of your integrity once a second (an eighth through a ward). At none left you're thrown out with dumpshock and your head burns. Break its sight for eight seconds and it goes back to searching.
-  Strike it back with your blade: four strikes derez it, and its program halts until someone runs it again. Practice grid ICE hits as hard but throws you out without dumpshock or burns. Write your own ICE with [mono]new NAME ice[/mono], or start from [mono]new NAME ice_basic[/mono]; [mono]man ice[/mono] lists what ICE can do.
+  - [color=#FF2633]red[/color]: engaging. It chases you anywhere, even out of its network, and strikes when you're within reach: real damage to your virtual body once a second (half as much through a ward), which bleeds. At 100 damage you're knocked into crit; at 200 your body dies and you're thrown out with dumpshock and a burnt head. Break its sight for eight seconds and it goes back to searching.
+  Strike it back with your blade: four strikes derez it, and its program halts until someone runs it again. The stock ICE leaves a runner it has knocked into crit alone rather than finishing them, practice grid or not. Write your own ICE with [mono]new NAME ice[/mono], or start from [mono]new NAME ice_basic[/mono]; [mono]man ice[/mono] lists what ICE can do.
 
   ## Firewalls
   <Box>

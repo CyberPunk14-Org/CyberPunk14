@@ -140,15 +140,40 @@
         - HighImpassable
         - LowImpassable
 
-# ICE: a guard run by a program on one of the network's computers. Its colour shows how alert its program says it
-# is.
+# ICE: a creature of the network, run by a program on one of its computers. It has real health and a swipe: it
+# can be hurt, bleeds and dies like the runners it hunts. Its colour shows how alert its program says it is.
 - type: entity
+  parent: [ MobDamageable, MobBloodstream ]
   id: CyberIce
   name: ICE
   description: Intrusion countermeasures, guarding this network.
   categories: [ HideSpawnMenu ]
   components:
   - type: Ice
+  # A creature, not a counter: at none left it dies, and its program halts.
+  - type: MobThresholds
+    thresholds:
+      0: Alive
+      100: Dead
+  - type: Bloodstream
+    bloodReferenceSolution:
+      reagents:
+      - ReagentId: Ghostlight
+        Quantity: 600
+  # It fights: a strike is a physical swing, with the arc and the sound other attacking mobs have.
+  - type: CombatMode
+    toggleMouseRotator: false
+  - type: MeleeWeapon
+    altDisarm: false
+    angle: 0
+    range: 1.25
+    resistanceBypass: true
+    animation: WeaponArcClaw
+    soundHit:
+      path: /Audio/Weapons/bladeslice.ogg
+    damage:
+      types:
+        Slash: 25
   - type: Sprite
     sprite: _CyberPunk/Cyberspace/node.rsi
     drawdepth: Mobs
@@ -182,6 +207,12 @@
     species: CyberAvatar
   - type: InitialBody
     organs: {}
+  # A virtual body takes real damage: it's knocked into crit at 100 and dies at 200, like any creature.
+  - type: MobThresholds
+    thresholds:
+      0: Alive
+      100: Critical
+      200: Dead
   - type: Bloodstream
     bloodReferenceSolution:
       reagents:

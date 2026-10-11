@@ -555,7 +555,7 @@ public sealed class WireTest
         Assert.That(Run("print(sys.device(), sys.args(), sys.jobs())"), Does.StartWith("computer  []\n"));
         Assert.That(Run("print(sys.device(), camera.count(), camera.names())", DeviceKind.Camera, 1,
             vm => vm.SetDevice(new CameraDevice(["Ana", "Bo"]))), Does.StartWith("camera 2 [\"Ana\", \"Bo\"]\n"));
-        Assert.That(Run("print(ice.integrity(), ice.here(), ice.nodes(), ice.position(), ice.alert())"),
+        Assert.That(Run("print(ice.health(), ice.here(), ice.nodes(), ice.position(), ice.alert())"),
             Does.StartWith("None None [] None None\n"));
     }
 

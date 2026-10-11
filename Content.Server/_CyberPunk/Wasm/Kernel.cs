@@ -74,10 +74,10 @@ public sealed record KernelHook(string Name, string Signature, KernelScope Scope
 public static class Kernel
 {
     /// <summary>
-    /// The newest kernel version. Programs import from <c>sb_v0</c> up to <c>sb_v10</c>, and every one is
+    /// The newest kernel version. Programs import from <c>sb_v0</c> up to <c>sb_v13</c>, and every one is
     /// provided, so programs built against an older kernel keep working.
     /// </summary>
-    public const int ApiVersion = 10;
+    public const int ApiVersion = 13;
 
     /// <summary>
     /// The screen is 80 columns; manual pages are wrapped to fit.
@@ -250,9 +250,11 @@ public static class Kernel
         new("ice_here", "(result i64)", KernelScope.IceProgram, 4,
             "The node the ICE stands at (a machine's id), or -1 if it isn't at one."),
         new("ice_start", "(result i32)", KernelScope.Computer, 4,
-            "Puts ICE in cyberspace on this computer's pad, guarding its network, run by this program from the next tick: the ice_ functions direct it. It goes when the program ends; if it is beaten, the program is halted. 0 ok, -1 not a computer (or a deck), -2 this program already runs ICE."),
+            "Puts ICE in cyberspace on this computer's pad, guarding its network, run by this program from the next tick: the ice_ functions direct it. It goes when the program ends; if it is destroyed, the program is halted. 0 ok, -1 not a computer (or a deck), -2 this program already runs ICE."),
+        new("ice_health", "(result i32)", KernelScope.IceProgram, 11,
+            "What's left of the ICE creature, out of 100: runners' strikes do it real damage, and at none it dies and derezzes, and this program is halted."),
         new("ice_integrity", "(result i32)", KernelScope.IceProgram, 4,
-            "The ICE's integrity, 100 when it starts: runners' strikes wear it down, and at none it derezzes and this program is halted."),
+            "Deprecated: the ICE creature's health, as ice_health."),
         new("ice_nodes", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Copies the nodes of the network it guards into buf as little-endian u32s (patrolling, only those on its side of the firewalls); returns how many there are."),
         new("ice_neighbours", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
@@ -263,8 +265,12 @@ public static class Kernel
             "Chases a runner it can see, along the paths, for as long as they stay in its network; engaging, it follows them out of it too, and comes back once it stops engaging. 0 ok, -1 it can't see them."),
         new("ice_runners", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Copies the netrunners in its network (anywhere, engaging) that it can see (along a clear path, within 9 tiles) into buf, one per line: id, the node they are nearest, authorized (1 if they carry the organization's ID card), in reach (1 if close enough to strike), the x and y of the tile they stand on, and name, separated by spaces. Returns the full length."),
+        new("ice_runner_down", "(param $runner i32) (result i32)", KernelScope.IceProgram, 12,
+            "Whether a runner it can see, by id, is down: 1 if they've been knocked into crit (or are dead), 0 if they're still on their feet, -1 if it can't see them."),
+        new("ice_random_tile", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 13,
+            "A random walkable tile of the layer it guards that no other ICE is on: copies it into buf (x then y, little-endian i32s) and returns 8, or returns 0 if the layer has no room. Somewhere new to patrol to."),
         new("ice_attack", "(param $runner i32) (result i32)", KernelScope.IceProgram, 4,
-            "Strikes a runner in reach, taking a quarter of their integrity (an eighth through a ward; once a second at most); at none left they are thrown out. 0 struck, -1 not in reach."),
+            "Strikes a runner in reach, doing real damage to their virtual body (half as much through a ward; once a second at most), which bleeds and can die from it; a fatal blow throws them out. 0 struck, -1 not in reach."),
         new("ice_position", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
             "Copies the tile the ICE stands on into buf: x then y, little-endian i32s. Returns 8."),
         new("ice_alert", "(param $buf i32 $cap i32) (result i32)", KernelScope.IceProgram, 4,
@@ -275,14 +281,16 @@ public static class Kernel
             "Walks to a tile of its network along the paths, the shortest way; it stops if there is no way there. 0 ok."),
         new("ice_mode", "(param $mode i32) (result i32)", KernelScope.IceProgram, 4,
             "Sets how alert the ICE is, shown in its colour: 0 patrolling, 1 searching, 2 engaging. Patrolling it stays on its side of the firewalls; searching or engaging it crosses them, and engaging it chases runners out of its network. 0 ok, -1 no such mode."),
+        new("deck_health", "(result i32)", KernelScope.Deck, 11,
+            "What's left of the runner's virtual body: 200 when whole, 100 when it falls into crit, 0 at death, when they are thrown out. Strikes do it real damage."),
         new("deck_integrity", "(result i32)", KernelScope.Deck, 4,
-            "The runner's integrity, 100 when they jack in: strikes wear it down, and at none they are thrown out."),
+            "Deprecated: the runner's virtual body's health, as deck_health."),
         new("deck_status", "(result i32)", KernelScope.Deck, 4,
             "1 if a ward is up, + 2 if the deck can strike now, + 4 if it can raise a ward now."),
         new("deck_targets", "(param $buf i32 $cap i32) (result i32)", KernelScope.Deck, 4,
-            "Copies what the deck can see (along a clear path, within 9 tiles) into buf, nearest first, one per line: id, kind (ice or runner), integrity, in reach (1 if close enough to strike), distance in tiles and name, separated by spaces. Returns the full length."),
+            "Copies what the deck can see (along a clear path, within 9 tiles) into buf, nearest first, one per line: id, kind (ice or runner), health, in reach (1 if close enough to strike), distance in tiles and name, separated by spaces. Returns the full length."),
         new("deck_strike", "(param $target i32) (result i32)", KernelScope.Deck, 4,
-            "Strikes ICE or a runner in reach, by id, for a quarter of its integrity (an eighth through a ward); at none left ICE derezzes (its program halts) and a runner is thrown out. Once every two-thirds of a second. 0 struck, -1 not in reach, -2 not ready yet."),
+            "Strikes ICE or a runner in reach, by id, doing real damage to the creature or virtual body (half as much through a ward); a runner it kills is thrown out, and ICE it kills derezzes (its program halts). Once every two-thirds of a second. 0 struck, -1 not in reach, -2 not ready yet."),
         new("deck_ward", "(result i32)", KernelScope.Deck, 4,
             "Raises a ward: strikes on the runner are halved for 2 seconds. Every 6 seconds at most. 0 raised, -2 not ready yet."),
         new("deck_hold", "(param $name i32 $len i32) (result i32)", KernelScope.Deck, 4,
@@ -377,7 +385,7 @@ public static class Kernel
     private static string IcePage()
     {
         var page = new StringBuilder("ICE\n\n");
-        page.Append("ICE guards a building's network in cyberspace: an entity walking the paths of its region, as netrunners do, that sees them along a clear path and knows which carry the organization's ID card. A program on one of the network's computers starts it (ice_start) and drives it; when that program ends, the ICE goes. A runner who beats it down derezzes it, and its program halts on its computer.\n\nTRACES: a runner who steps up to one of the network's computers without the organization's ID card is traced. When the trace completes, every ICE on the network is alerted, once, to where the runner is (ice_alert).\n");
+        page.Append("ICE guards a building's network in cyberspace: a creature walking the paths of its region, as netrunners do, that sees them along a clear path and knows which carry the organization's ID card. It has real health and can be hurt, made to bleed and killed. A program on one of the network's computers starts it (ice_start) and drives it; when that program ends, the ICE goes. A runner who kills it derezzes it, and its program halts on its computer.\n\nTRACES: a runner who steps up to one of the network's computers without the organization's ID card is traced. When the trace completes, every ICE on the network is alerted, once, to where the runner is (ice_alert).\n");
         page.Append("\nLOW-LEVEL KERNEL FUNCTIONS (elsewhere they return -1)\n\n");
 
         foreach (var f in Functions.Where(f => f.Scope == KernelScope.IceProgram || f.Name == "ice_start"))

@@ -49,15 +49,15 @@ public sealed record Requester(string Name, string Holding, IReadOnlyList<string
 public sealed record FirmwareFlash(uint To, string Name, byte[] Bytes);
 
 /// <summary>
-/// Something a deck sees in cyberspace: its id, whether it's ICE (else a runner), its name and integrity,
+/// Something a deck sees in cyberspace: its id, whether it's ICE (else a runner), its name and health,
 /// whether it's close enough to strike, and how far it is in tiles.
 /// </summary>
-public sealed record DeckTarget(int Id, bool Ice, string Name, int Integrity, bool InReach, int Distance);
+public sealed record DeckTarget(int Id, bool Ice, string Name, int Health, bool InReach, int Distance);
 
 /// <summary>
 /// A deck as it stands in cyberspace this tick, and what it sees, nearest first.
 /// </summary>
-public sealed record DeckView(int Integrity, bool Warded, bool StrikeReady, bool WardReady, IReadOnlyList<DeckTarget> Targets);
+public sealed record DeckView(int Health, bool Warded, bool StrikeReady, bool WardReady, IReadOnlyList<DeckTarget> Targets);
 
 /// <summary>
 /// A file a deck is copying to a computer: the one at <paramref name="Address"/>, or with 0 the one whose pad its
@@ -72,9 +72,11 @@ public sealed record DeckOrders(int? Strike, bool Ward, string? Hold, DeckPush? 
 
 /// <summary>
 /// A runner an ICE sees: their id, the node they're nearest (0 if none), whether their ID passes its computer's
-/// reader, whether they're close enough to strike, the tile they stand on and their name.
+/// reader, whether they're close enough to strike, the tile they stand on, their name, and whether they're still
+/// on their feet (false once knocked into crit).
 /// </summary>
-public sealed record IceRunner(int Id, int Node, bool Authorized, bool InReach, int X, int Y, string Name);
+public sealed record IceRunner(int Id, int Node, bool Authorized, bool InReach, int X, int Y, string Name,
+    bool Down);
 
 /// <summary>
 /// An ICE as it stands in cyberspace this tick, for the program running it: the tile it's on, the node it's at
@@ -82,14 +84,15 @@ public sealed record IceRunner(int Id, int Node, bool Authorized, bool InReach, 
 /// and where a completed trace says an intruder is.
 /// </summary>
 public sealed record IceView(
-    int Integrity,
+    int Health,
     int X,
     int Y,
     long Here,
     IReadOnlyList<uint> Nodes,
     IReadOnlyList<uint> Neighbours,
     IReadOnlyList<IceRunner> Runners,
-    (int X, int Y)? Alert);
+    (int X, int Y)? Alert,
+    (int X, int Y)? RandomTile);
 
 public enum IceOrderKind : byte
 {

@@ -14,12 +14,17 @@ using Content.Shared.Access.Components;
 using Content.Shared.Access.Systems;
 using Content.Shared.Body;
 using Content.Shared.Body.Components;
+using Content.Shared.Damage;
 using Content.Shared.Damage.Systems;
+using Content.Shared.FixedPoint;
 using Content.Shared.Hands.EntitySystems;
 using Content.Shared.Humanoid;
 using Content.Shared.Interaction;
 using Content.Shared.Inventory;
 using Content.Shared.Mind;
+using Content.Shared.Mobs;
+using Content.Shared.Mobs.Components;
+using Content.Shared.Mobs.Systems;
 using Content.Shared.Power.EntitySystems;
 using Content.Shared.UserInterface;
 using Robust.Shared.GameObjects;
@@ -339,6 +344,50 @@ public sealed class CyberspaceTest : GameTest
                 "it shows the ID their body wears now");
 
             cyberspace.JackOut(runner, "", false);
+        });
+    }
+
+    /// <summary>
+    /// A runner's virtual body is a creature, not a counter: it falls into crit at 100 damage and only dies at
+    /// 200. Reaching crit leaves them jacked in; only death throws them out.
+    /// </summary>
+    [Test]
+    public async Task AvatarsReachCritBeforeTheyDie()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var minds = _entMan.System<SharedMindSystem>();
+        var hands = _entMan.System<SharedHandsSystem>();
+        var godmode = _entMan.System<SharedGodmodeSystem>();
+        var damageable = _entMan.System<DamageableSystem>();
+        var states = _entMan.System<MobStateSystem>();
+
+        EntityUid runner = default, deck = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            mapSys.SetTile(_grid, Vector2i.Zero, new Tile(1));
+            (runner, deck) = Runner(minds, hands, godmode, 0, 0);
+        });
+
+        await Pair.RunTicksSync(1);
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(cyberspace.TryPractise(runner, deck));
+            Assert.That(cyberspace.IsJackedIn(runner, out var a));
+            var avatar = a!.Value;
+
+            var scratch = new DamageSpecifier { DamageDict = { ["Slash"] = 100 } };
+            damageable.TryChangeDamage(avatar, scratch, ignoreResistances: true);
+            Assert.That(states.IsCritical(avatar), Is.True, "knocked into crit at 100 damage");
+            Assert.That(cyberspace.IsJackedIn(runner, out _), Is.True, "crit leaves them jacked in");
+
+            damageable.TryChangeDamage(avatar, scratch, ignoreResistances: true);
+            Assert.That(states.IsDead(avatar), Is.True, "dead at 200 damage");
+            Assert.That(cyberspace.IsJackedIn(runner, out _), Is.False, "death throws them out");
         });
     }
 
@@ -743,7 +792,7 @@ public sealed class CyberspaceTest : GameTest
 
     /// <summary>
     /// A computer's program puts ICE on its pad. A runner's blade derezzes it and halts the program; ICE left
-    /// to it engages a runner it sees and strikes them out of cyberspace.
+    /// to it engages a runner it sees and strikes them into crit, which it then leaves them be.
     /// </summary>
     [Test]
     public async Task IceGuardsNetworks()
@@ -835,9 +884,306 @@ public sealed class CyberspaceTest : GameTest
         await Pair.RunTicksSync(300);
         await server.WaitAssertion(() =>
         {
-            Assert.That(cyberspace.IsJackedIn(runner, out _), Is.False, "the ICE threw them out");
-            Assert.That(cyberspace.TryJackIn(runner, deck, accessPoint, true), Is.False, "dumpshock");
+            // The default ICE strikes the runner into crit and then leaves them be: it doesn't finish them.
+            Assert.That(cyberspace.IsJackedIn(runner, out var downed), Is.True, "left in crit, not thrown out");
+            Assert.That(_entMan.System<MobStateSystem>().IsCritical(downed!.Value), Is.True, "knocked into crit");
             Assert.That(_entMan.EntityExists(ice), "the ICE stays");
+        });
+    }
+
+    /// <summary>
+    /// ICE won't share a tile: a second ICE started on the same network takes a free tile rather than stacking on
+    /// the first.
+    /// </summary>
+    [Test]
+    public async Task IceDoesNotStack()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var machines = _entMan.System<WasmMachineSystem>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+
+        EntityUid guard = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = 0; x < 6; x++)
+            {
+                for (var y = 0; y < 3; y++)
+                {
+                    mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+                }
+
+                Place("CableData", x, 0);
+            }
+
+            guard = Place("ComputerProgrammable", 5, 0);
+            var accessPoint = Place("AccessPoint", 3, 0);
+            var router = Place("NetworkRouter", 1, 1);
+            foreach (var ent in new[] { guard, accessPoint, router })
+            {
+                power.SetNeedsPower(ent, false);
+            }
+        });
+
+        await Pair.RunTicksSync(30);
+        await server.WaitAssertion(() =>
+        {
+            // Two programs on the same computer, each starting its own ICE.
+            var at = (guard, _entMan.GetComponent<WasmMachineComponent>(guard));
+            machines.TypeLine(at, "run ice_basic &");
+            machines.TypeLine(at, "run ice_basic &");
+        });
+
+        // Stop as soon as both are up, before either has had a chance to walk.
+        for (var i = 0; i < 30 && _entMan.AllEntities<IceComponent>().Count() < 2; i++)
+        {
+            await Pair.RunTicksSync(1);
+        }
+
+        await server.WaitAssertion(() =>
+        {
+            var ices = _entMan.AllEntities<IceComponent>().ToList();
+            Assert.That(ices, Has.Count.EqualTo(2), "two ICE started");
+            Assert.That(ices.Select(e => Tile(e.Owner)).ToHashSet(), Has.Count.EqualTo(2), "on two different tiles");
+        });
+    }
+
+    /// <summary>
+    /// ICE won't walk onto a tile another ICE is standing on: several ICE patrolling the one network never share
+    /// a tile as they walk.
+    /// </summary>
+    [Test]
+    public async Task IceDoesNotStackWhilePatrolling()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var machines = _entMan.System<WasmMachineSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+
+        const int count = 5;
+        EntityUid guard = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = 0; x < 6; x++)
+            {
+                for (var y = 0; y < 3; y++)
+                {
+                    mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+                }
+
+                Place("CableData", x, 0);
+            }
+
+            guard = Place("ComputerProgrammable", 5, 0);
+            var accessPoint = Place("AccessPoint", 3, 0);
+            var router = Place("NetworkRouter", 1, 1);
+            foreach (var ent in new[] { guard, accessPoint, router })
+            {
+                power.SetNeedsPower(ent, false);
+            }
+        });
+
+        await Pair.RunTicksSync(30);
+        await server.WaitAssertion(() =>
+        {
+            var at = (guard, _entMan.GetComponent<WasmMachineComponent>(guard));
+            for (var i = 0; i < count; i++)
+            {
+                machines.TypeLine(at, "run ice_basic &");
+            }
+        });
+
+        await Pair.RunTicksSync(30);
+
+        for (var batch = 0; batch < 10; batch++)
+        {
+            await Pair.RunTicksSync(20);
+            await server.WaitAssertion(() =>
+            {
+                var tiles = _entMan.AllEntities<IceComponent>().Select(e => Tile(e.Owner)).ToList();
+                Assert.That(tiles, Has.Count.GreaterThanOrEqualTo(2), "ICE started");
+                Assert.That(tiles.ToHashSet(), Has.Count.EqualTo(tiles.Count), "none sharing a tile");
+            });
+        }
+    }
+
+    /// <summary>
+    /// Twenty ICE on the one network hammer the movement: all walking the same paths, they must never end up
+    /// sharing a tile, and must keep going rather than jam up.
+    /// </summary>
+    [Test]
+    public async Task ManyIceOnOneNetworkDoNotStack()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var machines = _entMan.System<WasmMachineSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+
+        const int count = 20;
+        var computers = new List<EntityUid>();
+        await server.WaitAssertion(() =>
+        {
+            // Start from a clean cyberspace: the map is kept across tests on a reused pair, and a leftover region
+            // from another test's network would otherwise be in the way.
+            if (cyberspace.MapUid is { } oldMap && _entMan.EntityExists(oldMap))
+                _entMan.DeleteEntity(oldMap);
+
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = 0; x < count + 4; x++)
+            {
+                for (var y = 0; y < 3; y++)
+                {
+                    mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+                }
+
+                Place("CableData", x, 0);
+            }
+
+            var router = Place("NetworkRouter", 0, 1);
+            var accessPoint = Place("AccessPoint", 1, 0);
+            power.SetNeedsPower(router, false);
+            power.SetNeedsPower(accessPoint, false);
+
+            for (var i = 0; i < count; i++)
+            {
+                var computer = Place("ComputerProgrammable", i + 2, 0);
+                power.SetNeedsPower(computer, false);
+                computers.Add(computer);
+            }
+        });
+
+        await Pair.RunTicksSync(30);
+        await server.WaitAssertion(() =>
+        {
+            foreach (var computer in computers)
+            {
+                machines.TypeLine((computer, _entMan.GetComponent<WasmMachineComponent>(computer)), "run ice_basic &");
+            }
+        });
+
+        // Let them all come up.
+        for (var i = 0; i < 180 && _entMan.AllEntities<IceComponent>().Count() < count; i++)
+        {
+            await Pair.RunTicksSync(1);
+        }
+
+        await server.WaitAssertion(() =>
+            Assert.That(_entMan.AllEntities<IceComponent>().Count(), Is.EqualTo(count), "twenty ICE started"));
+
+        // Walk them a while, checking no two ever share a tile and that none of them jam up.
+        var seen = new Dictionary<EntityUid, Vector2i>();
+        var moved = new HashSet<EntityUid>();
+        for (var batch = 0; batch < 15; batch++)
+        {
+            await Pair.RunTicksSync(20);
+            await server.WaitAssertion(() =>
+            {
+                var ices = _entMan.AllEntities<IceComponent>().Select(e => e.Owner).ToList();
+                Assert.That(ices, Has.Count.EqualTo(count), "all twenty still up");
+
+                var tiles = ices.Select(Tile).ToList();
+                Assert.That(tiles.ToHashSet(), Has.Count.EqualTo(tiles.Count), "none sharing a tile");
+
+                foreach (var ice in ices)
+                {
+                    var at = Tile(ice);
+                    if (seen.TryGetValue(ice, out var last) && last != at)
+                        moved.Add(ice);
+                    seen[ice] = at;
+                }
+            });
+        }
+
+        await server.WaitAssertion(() =>
+            Assert.That(moved, Has.Count.GreaterThanOrEqualTo(count * 3 / 4),
+                $"{count - moved.Count} of {count} ICE never moved"));
+
+        // Take the network down cleanly so the ICE programs stop before the pair is recycled.
+        await server.WaitAssertion(() =>
+        {
+            foreach (var computer in computers)
+            {
+                if (_entMan.EntityExists(computer))
+                    _entMan.DeleteEntity(computer);
+            }
+        });
+        await Pair.RunTicksSync(2);
+    }
+
+    /// <summary>
+    /// Jacking in beside a firewall still puts the deck on the firewall's network: it gets an address like any
+    /// other deck, even though a firewall is a switch, not a host.
+    /// </summary>
+    [Test]
+    public async Task DecksJackedInAtAFirewallGetAnAddress()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var machines = _entMan.System<WasmMachineSystem>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+        var minds = _entMan.System<SharedMindSystem>();
+        var hands = _entMan.System<SharedHandsSystem>();
+        var godmode = _entMan.System<SharedGodmodeSystem>();
+
+        EntityUid router = default, firewall = default, inside = default, runner = default, deck = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = 0; x < 7; x++)
+            {
+                for (var y = 0; y < 3; y++)
+                {
+                    mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+                }
+
+                // The firewall's tile has no cable: it joins the cable on either side.
+                if (x != 3)
+                    Place("CableData", x, 0);
+            }
+
+            router = Place("NetworkRouter", 0, 1);
+            firewall = Place("NetworkFirewall", 3, 0);
+            inside = Place("ComputerProgrammable", 5, 0);
+            foreach (var ent in new[] { router, firewall, inside })
+            {
+                power.SetNeedsPower(ent, false);
+            }
+
+            (runner, deck) = Runner(minds, hands, godmode, 3, 1);
+        });
+
+        await Pair.RunTicksSync(30);
+
+        EntityUid avatar = default;
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(cyberspace.NodeOf(firewall), Is.Not.Null, "the firewall has a pad");
+
+            // Jack in plugged in, beside the firewall itself.
+            Assert.That(cyberspace.TryJackIn(runner, deck, firewall, true));
+            Assert.That(cyberspace.IsJackedIn(runner, out var a));
+            avatar = a!.Value;
+        });
+
+        await Pair.RunTicksSync(10);
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(machines.AddressOf(avatar), Is.Not.Null, "the deck is on the firewall's network");
+            Assert.That(Name(cyberspace.NodeOf(avatar)!.Value), Does.StartWith("deck 10."));
+            cyberspace.JackOut(runner, "", false);
         });
     }
 

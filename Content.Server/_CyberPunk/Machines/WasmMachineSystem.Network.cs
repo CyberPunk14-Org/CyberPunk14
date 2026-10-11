@@ -214,6 +214,37 @@ public sealed partial class WasmMachineSystem
     }
 
     /// <summary>
+    /// The network a machine is already a member of, if it's one.
+    /// </summary>
+    private static object? NetworkOfMember(Dictionary<object, List<EntityUid>> members, EntityUid machine)
+    {
+        foreach (var (network, list) in members)
+        {
+            if (list.Contains(machine))
+                return network;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The network a machine connects at: its own if it's a computer, or the hub's or cable's it stands on.
+    /// </summary>
+    private object? NetworkOfDevice(EntityUid device)
+    {
+        if (TryComp<NetworkHubComponent>(device, out var hub))
+            return NetworkOf(device, hub.Node);
+
+        if (TryComp<WasmMachineComponent>(device, out var machine))
+            return NetworkOf(device, machine.DataNode);
+
+        if (TryComp<DataCableComponent>(device, out var cable))
+            return NetworkOf(device, cable.Node);
+
+        return null;
+    }
+
+    /// <summary>
     /// Works out every machine's address, who it can reach, its neighbours and the hostnames it can look up,
     /// and tells each machine.
     /// </summary>
@@ -267,16 +298,24 @@ public sealed partial class WasmMachineSystem
 
         FindDevices(served, members);
 
-        // Decks join the network of the machine they came in through.
+        // Decks join the network of the machine they came in through: a host, a device on the cable, or a hub
+        // like a switch, a router or a firewall, which is never a member itself.
         foreach (var (machine, virtualHost) in _virtualHosts)
         {
             if (virtualHost.Beside is not { } device || !TryComp<WasmMachineComponent>(machine, out var comp) || comp.Vm == null)
                 continue;
 
-            if (members.FirstOrDefault(m => m.Value.Contains(device)).Value is { } list)
-                list.Add(machine);
-            else
+            var network = NetworkOfMember(members, device) ?? NetworkOfDevice(device);
+            if (network is not { } found || !served.ContainsKey(found))
+            {
                 unconnected.Add((machine, comp));
+                continue;
+            }
+
+            if (!members.TryGetValue(found, out var list))
+                members[found] = list = new List<EntityUid>();
+
+            list.Add(machine);
         }
 
         // Addresses: a machine keeps the one it has while it stays, and a newcomer gets the lowest free one.

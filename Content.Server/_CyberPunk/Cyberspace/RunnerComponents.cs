@@ -76,12 +76,6 @@ public sealed partial class CyberAvatarComponent : Component
     public HashSet<EntityUid> Breached = new();
 
     /// <summary>
-    /// What strikes have left of them this run: at none they're thrown out.
-    /// </summary>
-    [ViewVariables]
-    public int Integrity = CyberspaceSystem.MaxIntegrity;
-
-    /// <summary>
     /// When their deck can strike again.
     /// </summary>
     [ViewVariables]

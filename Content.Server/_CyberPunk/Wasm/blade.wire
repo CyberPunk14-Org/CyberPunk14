@@ -17,7 +17,7 @@ def find(id):
             return t
     return None
 
-if deck.integrity() == None:
+if deck.health() == None:
     print("blade: only runs on a deck in cyberspace")
     sys.exit(1)
 else:

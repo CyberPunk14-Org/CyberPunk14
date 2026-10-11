@@ -4,9 +4,17 @@ using Content.Server._CyberPunk.Machines;
 using Content.Server._CyberPunk.Wasm;
 using Content.Shared._CyberPunk.Cyberspace;
 using Content.Shared.Access.Components;
+using Content.Shared.CombatMode;
 using Content.Shared.Damage;
+using Content.Shared.Damage.Components;
 using Content.Shared.Damage.Systems;
 using Content.Shared.Examine;
+using Content.Shared.FixedPoint;
+using Content.Shared.Mobs;
+using Content.Shared.Mobs.Components;
+using Content.Shared.Mobs.Systems;
+using Content.Shared.Weapons.Melee;
+using Content.Shared.Weapons.Melee.Events;
 using Robust.Shared.Map;
 using Robust.Shared.Prototypes;
 
@@ -17,16 +25,21 @@ namespace Content.Server._CyberPunk.Cyberspace;
 /// a program on one of the network's computers. A program asks for ICE with <c>ice_start</c> and it appears on its
 /// computer's pad. Before every machine tick the program is shown what its ICE sees; after it, the ICE carries
 /// out the program's orders: walk to a node or a tile, chase a runner, strike one in reach. ICE keeps to its
-/// region unless it's engaging, and keeps behind firewalls while patrolling. It goes quietly when its program ends, and its program is halted when a runner derezzes it or its
+/// region unless it's engaging, and keeps behind firewalls while patrolling. It goes quietly when its program ends, and its program is halted when a runner destroys it or its
 /// computer drops off the network.
 /// </summary>
+/// <remarks>
+/// ICE is a creature, not a counter: it has real health, bleeds and dies like the virtual bodies it hunts
+/// (<see cref="CyberAvatarComponent"/>). A program still directs it entirely through the <c>ice_</c> functions,
+/// but its blows and the blows runners land on it are ordinary damage.
+/// </remarks>
 public sealed partial class CyberspaceSystem
 {
     [Dependency] private DamageableSystem _damageable = default!;
     [Dependency] private SharedAppearanceSystem _appearance = default!;
-
-    /// <summary>What one strike of ICE takes from a runner, or half that through a ward.</summary>
-    public const int IceDamage = 25;
+    [Dependency] private SharedCombatModeSystem _combat = default!;
+    [Dependency] private SharedMeleeWeaponSystem _melee = default!;
+    [Dependency] private MobThresholdSystem _thresholds = default!;
 
     /// <summary>How far ICE sees, along a clear path, in tiles.</summary>
     public const float IceSight = 9f;
@@ -38,7 +51,7 @@ public sealed partial class CyberspaceSystem
 
     private static readonly EntProtoId IcePrototype = "CyberIce";
 
-    /// <summary>What ICE that throws a runner out does to their head.</summary>
+    /// <summary>What ICE throwing a runner out does to their head, once the blow lands.</summary>
     private static readonly DamageSpecifier IceBurn = new() { DamageDict = { ["Heat"] = 15 } };
 
     /// <summary>The computers whose programs were shown ICE last tick.</summary>
@@ -77,6 +90,41 @@ public sealed partial class CyberspaceSystem
         SubscribeLocalEvent<WasmMachineComponent, IceStartedEvent>(OnIceStarted);
         SubscribeLocalEvent<WasmMachineComponent, IceOrdersEvent>(OnIceOrders);
         SubscribeLocalEvent<IceComponent, ExaminedEvent>(OnIceExamined);
+        SubscribeLocalEvent<IceComponent, MobStateChangedEvent>(OnIceMobStateChanged);
+        SubscribeLocalEvent<IceComponent, MeleeHitEvent>(OnIceMeleeHit);
+    }
+
+    /// <summary>
+    /// What's left of a virtual body or an ICE creature: its own death threshold (200 for a runner's virtual
+    /// body, 100 for ICE) less the damage it has taken. Real damage wears it down; at none it dies.
+    /// </summary>
+    private int HealthOf(EntityUid uid)
+    {
+        if (!HasComp<DamageableComponent>(uid))
+            return 0;
+
+        // A single number is what the ice_/deck_ kernel functions report, so we deliberately read the total.
+#pragma warning disable CS0618 // GetTotalDamage is obsolete for gameplay code, but this is an API readout.
+        var total = _damageable.GetTotalDamage(uid);
+#pragma warning restore CS0618
+
+        var death = _thresholds.TryGetThresholdForState(uid, MobState.Dead, out var dead) && dead is { } threshold
+            ? threshold
+            : (FixedPoint2) FallbackHealth;
+
+        return (int) FixedPoint2.Max(0, death - total);
+    }
+
+    /// <summary>
+    /// Lands a physical strike on a runner's virtual body: real damage it bleeds from, half as much through a
+    /// ward. Returns what health it has left, or 0 if the blow killed it (its runner is then thrown out).
+    /// </summary>
+    private int LandStrike(EntityUid striker, Entity<CyberAvatarComponent> victim)
+    {
+        var warded = _timing.CurTime < victim.Comp.WardUntil;
+        _damageable.TryChangeDamage(victim.Owner, warded ? StrikeDamage / 2 : StrikeDamage,
+            ignoreResistances: true, origin: striker);
+        return HealthOf(victim.Owner);
     }
 
     /// <summary>
@@ -130,7 +178,15 @@ public sealed partial class CyberspaceSystem
                 continue;
             }
 
-            var ice = Spawn(IcePrototype, Transform(area.Home).Coordinates);
+            // ICE won't share a tile: stand on its pad if it's free, otherwise anywhere there's room, or don't
+            // come at all.
+            if (IceSpot(area) is not { } spot)
+            {
+                _machines.Halt(ent.AsNullable(), pid, "no room left on this network for its ICE");
+                continue;
+            }
+
+            var ice = Spawn(IcePrototype, new EntityCoordinates(_mapUid!.Value, spot.X + 0.5f, spot.Y + 0.5f));
             var comp = EnsureComp<IceComponent>(ice);
             comp.Computer = ent;
             comp.Pid = pid;
@@ -138,6 +194,51 @@ public sealed partial class CyberspaceSystem
             comp.Practice = area.Practice;
             _machines.Announce(ent.AsNullable(), "[ice: in cyberspace, guarding this network]\n");
         }
+    }
+
+    /// <summary>
+    /// A tile in an area for a new ICE to stand on: its pad if it's free, otherwise any walkable tile no other
+    /// ICE is on. Null if the whole layer is full.
+    /// </summary>
+    private (int X, int Y)? IceSpot(IceArea area)
+    {
+        var taken = IceTiles(EntityUid.Invalid);
+
+        var home = _transform.GetWorldPosition(area.Home);
+        var homeTile = ((int) MathF.Floor(home.X), (int) MathF.Floor(home.Y));
+        if (CyberLayout.Walkable(FloorAt(homeTile.Item1, homeTile.Item2)) && !taken.Contains(homeTile))
+            return homeTile;
+
+        var rect = area.Rect;
+        for (var y = rect.Y; y < rect.Y + rect.H; y++)
+        {
+            for (var x = rect.X; x < rect.X + rect.W; x++)
+            {
+                if (CyberLayout.Walkable(FloorAt(x, y)) && !taken.Contains((x, y)))
+                    return (x, y);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The tiles ICE creatures are standing on, apart from one, if given.
+    /// </summary>
+    private HashSet<(int X, int Y)> IceTiles(EntityUid except)
+    {
+        var tiles = new HashSet<(int X, int Y)>();
+        var query = EntityQueryEnumerator<IceComponent>();
+        while (query.MoveNext(out var other, out _))
+        {
+            if (other == except)
+                continue;
+
+            var pos = _transform.GetWorldPosition(other);
+            tiles.Add(((int) MathF.Floor(pos.X), (int) MathF.Floor(pos.Y)));
+        }
+
+        return tiles;
     }
 
     /// <summary>
@@ -214,54 +315,90 @@ public sealed partial class CyberspaceSystem
     }
 
     /// <summary>
-    /// ICE strikes a runner in reach, once a second at most. At none left they're thrown out, with a burnt head
-    /// unless it was a practice grid.
+    /// ICE strikes a runner in reach, once a second at most, with the swing, arc and sound any attacking creature
+    /// has: real damage to their virtual body, half through a ward, and a fatal blow throws them out with a burnt
+    /// head. Its program's orders decide when it strikes.
     /// </summary>
     private void IceStrike(Entity<IceComponent> ice, EntityUid avatar)
     {
         var now = _timing.CurTime;
         if (now < ice.Comp.StrikeReadyAt
             || !TryComp<CyberAvatarComponent>(avatar, out var victim)
-            || !_transform.InRange(ice.Owner, avatar, StrikeReach))
+            || !_transform.InRange(ice.Owner, avatar, StrikeReach)
+            || !TryComp<MeleeWeaponComponent>(ice.Owner, out var weapon))
         {
             return;
         }
 
         ice.Comp.StrikeReadyAt = now + IceCooldown;
+
+        // It has no mind but its program's: a strike is a swing. Put it in combat mode and let the melee system
+        // play the arc and the sounds, and land the damage.
+        _combat.SetInCombatMode(ice.Owner, true);
+
+        var before = HealthOf(avatar);
+        if (!_melee.AttemptLightAttack(ice.Owner, ice.Owner, weapon, avatar) || HealthOf(avatar) >= before)
+            return;
+
+        var health = HealthOf(avatar);
+        if (health <= 0)
+        {
+            // The blow that kills them goes through to the body behind: their head burns.
+            _damageable.TryChangeDamage(victim.Body, IceBurn, ignoreResistances: true, origin: ice.Owner);
+            return;
+        }
+
         var warded = now < victim.WardUntil;
-        victim.Integrity = Math.Max(0, victim.Integrity - (warded ? IceDamage / 2 : IceDamage));
-        if (victim.Integrity > 0)
-        {
-            var text = Loc.GetString(warded ? "cyberspace-ice-strikes-warded" : "cyberspace-ice-strikes",
-                ("integrity", victim.Integrity));
-            _popup.PopupEntity(text, avatar, avatar);
-            return;
-        }
-
-        if (ice.Comp.Practice != null)
-        {
-            JackOut(victim.Body, Loc.GetString("cyberspace-ice-practice-out"), true);
-            return;
-        }
-
-        _damageable.TryChangeDamage(victim.Body, IceBurn, ignoreResistances: true);
-        JackOut(victim.Body, Loc.GetString("cyberspace-ice-dumpshock"), true);
+        _popup.PopupEntity(Loc.GetString(warded ? "cyberspace-ice-strikes-warded" : "cyberspace-ice-strikes",
+            ("health", health)), avatar, avatar);
     }
 
     /// <summary>
-    /// A deck strikes ICE: at none left it derezzes, and its program is halted.
+    /// A runner's ward halves what a strike lands on them: the swing goes through, but only half the damage does.
+    /// </summary>
+    private void OnIceMeleeHit(Entity<IceComponent> ent, ref MeleeHitEvent args)
+    {
+        if (!args.IsHit)
+            return;
+
+        foreach (var hit in args.HitEntities)
+        {
+            if (TryComp<CyberAvatarComponent>(hit, out var victim) && _timing.CurTime < victim.WardUntil)
+            {
+                args.ModifiersList.Add(new DamageModifierSet { Coefficients = { ["Slash"] = 0.5f } });
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A deck strikes ICE: it takes real damage, bleeds and can be killed. At death it derezzes and its program is
+    /// halted.
     /// </summary>
     private void StrikeIce(Entity<CyberAvatarComponent> deck, Entity<IceComponent> ice)
     {
-        ice.Comp.Integrity = Math.Max(0, ice.Comp.Integrity - DeckDamage);
-        if (ice.Comp.Integrity > 0)
+        ice.Comp.LastStriker = deck.Owner;
+        _damageable.TryChangeDamage(ice.Owner, StrikeDamage, ignoreResistances: true, origin: deck.Owner);
+        if (TryComp<MobStateComponent>(ice.Owner, out var state) && state.CurrentState == MobState.Dead)
         {
-            _popup.PopupEntity(Loc.GetString("cyberspace-strike-ice", ("integrity", ice.Comp.Integrity)), deck, deck);
+            _popup.PopupEntity(Loc.GetString("cyberspace-ice-derezzed"), deck, deck);
             return;
         }
 
-        Derez(ice, $"its ICE was derezzed by {Name(deck)}");
-        _popup.PopupEntity(Loc.GetString("cyberspace-ice-derezzed"), deck, deck);
+        _popup.PopupEntity(Loc.GetString("cyberspace-strike-ice", ("health", HealthOf(ice.Owner))), deck, deck);
+    }
+
+    /// <summary>
+    /// An ICE creature that dies derezzes, and its program is halted.
+    /// </summary>
+    private void OnIceMobStateChanged(Entity<IceComponent> ent, ref MobStateChangedEvent args)
+    {
+        if (args.NewMobState != MobState.Dead || TerminatingOrDeleted(ent))
+            return;
+
+        Derez(ent, ent.Comp.LastStriker is { } striker && !TerminatingOrDeleted(striker)
+            ? $"its ICE was derezzed by {Name(striker)}"
+            : "its ICE was derezzed");
     }
 
     private void Derez(Entity<IceComponent> ice, string why)
@@ -272,7 +409,7 @@ public sealed partial class CyberspaceSystem
 
     private void OnIceExamined(Entity<IceComponent> ent, ref ExaminedEvent args)
     {
-        args.PushMarkup(Loc.GetString("cyberspace-ice-examined", ("integrity", ent.Comp.Integrity)));
+        args.PushMarkup(Loc.GetString("cyberspace-ice-examined", ("health", HealthOf(ent.Owner))));
     }
 
     /// <summary>
@@ -291,6 +428,9 @@ public sealed partial class CyberspaceSystem
         var views = new Dictionary<EntityUid, Dictionary<uint, IceView>>();
         foreach (var ice in all)
         {
+            if (TerminatingOrDeleted(ice))
+                continue;
+
             if (TerminatingOrDeleted(ice.Comp.Computer) || !_machines.IsRunning(ice.Comp.Computer, ice.Comp.Pid))
             {
                 QueueDel(ice);
@@ -384,20 +524,40 @@ public sealed partial class CyberspaceSystem
                 (at - pos).Length() <= StrikeReach,
                 x,
                 y,
-                Name(runner)));
+                Name(runner),
+                _mobState.IsIncapacitated(runner.Owner)));
         }
 
         runners.Sort((a, b) => a.Id.CompareTo(b.Id));
         var alert = ice.Comp.Alert;
         ice.Comp.Alert = null;
-        return new IceView(ice.Comp.Integrity,
+        return new IceView(HealthOf(ice.Owner),
             (int) MathF.Floor(pos.X),
             (int) MathF.Floor(pos.Y),
             here is { } i ? NodeId(area.Nodes[i]) : -1,
             nodes.Select(NodeId).ToList(),
             neighbours,
             runners,
-            alert);
+            alert,
+            RandomIceTile(area, ice.Owner));
+    }
+
+    /// <summary>
+    /// A random walkable tile of an area that no other ICE is on, for patrolling ICE to wander to.
+    /// </summary>
+    private (int X, int Y)? RandomIceTile(IceArea area, EntityUid self)
+    {
+        var rect = area.Rect;
+        var taken = IceTiles(self);
+        for (var i = 0; i < 64; i++)
+        {
+            var x = _random.Next(rect.X, rect.X + rect.W);
+            var y = _random.Next(rect.Y, rect.Y + rect.H);
+            if (CyberLayout.Walkable(FloorAt(x, y)) && !taken.Contains((x, y)))
+                return (x, y);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -437,8 +597,10 @@ public sealed partial class CyberspaceSystem
     /// <summary>
     /// Walks ICE along the paths towards its target, the shortest way. It keeps to its area and doesn't cross
     /// firewalls while patrolling, except to get back to its own side; engaging, it follows a runner anywhere,
-    /// and once it stops it comes back to its area. It gives up on a tile it has no way to; a node or runner it
-    /// keeps, standing still.
+    /// and once it stops it comes back to its area. It won't step onto a tile another ICE stands on: where there
+    /// is a way around one it takes it, where there isn't it waits — unless the two are coming at each other, when
+    /// they swap places rather than wait on one another. It gives up on a tile it has no way to; a node or runner
+    /// it keeps, standing still.
     /// </summary>
     private void WalkIce(Entity<IceComponent> ice, IceArea area, float frameTime)
     {
@@ -464,6 +626,7 @@ public sealed partial class CyberspaceSystem
         if (goal == null || chasingOut && !engaging && !away)
         {
             ice.Comp.Target = IceTarget.Idle;
+            ice.Comp.Next = null;
             return;
         }
 
@@ -474,26 +637,77 @@ public sealed partial class CyberspaceSystem
             if (target.Kind != IceTargetKind.Runner && !returning)
                 ice.Comp.Target = IceTarget.Idle;
 
+            ice.Comp.Next = null;
             return;
         }
 
-        if (ice.Comp.RouteGoal != goalTile || ice.Comp.Route.Count == 0)
+        // It never stands on a tile another ICE is on: a way around one it takes, and with no way around it waits.
+        var occupied = IceTiles(ice.Owner);
+        var nextTaken = ice.Comp.Route.Count > 0 && occupied.Contains(ice.Comp.Route[0]);
+        if (ice.Comp.RouteGoal != goalTile || ice.Comp.Route.Count == 0 || nextTaken)
         {
             // Off its area it may go anywhere; on it, it keeps to it, and patrolling it keeps off the firewalls
-            // unless that's the only way back to its side.
+            // unless that's the only way back to its side. Either way it keeps off the tiles other ICE stand on.
             var rect = engaging || away ? (CyberRect?) null : area.Rect;
-            var path = ice.Comp.Mode == IceMode.Patrolling && !away
-                ? TilePath(rect, from, goalTile, FirewallTiles(area))
-                  ?? (target.Kind == IceTargetKind.Node ? TilePath(rect, from, goalTile) : null)
-                : TilePath(rect, from, goalTile);
+            var patrolling = ice.Comp.Mode == IceMode.Patrolling && !away;
+            List<(int X, int Y)>? path;
+            if (patrolling)
+            {
+                var blocked = FirewallTiles(area);
+                foreach (var tile in occupied)
+                    blocked.Add(tile);
+
+                path = TilePath(rect, from, goalTile, blocked)
+                       ?? (target.Kind == IceTargetKind.Node ? TilePath(rect, from, goalTile, occupied) : null);
+            }
+            else
+            {
+                path = TilePath(rect, from, goalTile, occupied);
+            }
 
             if (path == null)
             {
+                // Blocked. Where it would step if the other ICE weren't there, which is what a head-on meeting is
+                // judged against.
+                var reachable = patrolling
+                    ? TilePath(rect, from, goalTile, FirewallTiles(area))
+                    : TilePath(rect, from, goalTile);
+
+                if (reachable == null)
+                {
+                    // A tile it truly has no way to, it gives up on.
+                    ice.Comp.Route.Clear();
+                    ice.Comp.RouteGoal = null;
+                    ice.Comp.Next = null;
+                    if (target.Kind == IceTargetKind.Tile)
+                        ice.Comp.Target = IceTarget.Idle;
+
+                    return;
+                }
+
+                var wanted = reachable[0];
+                ice.Comp.Next = wanted;
+
+                // Two ICE coming at each other, each in the other's way: the lower net id goes first and they swap
+                // places, so neither waits on the other. Otherwise it waits here and tries again next tick.
+                var blocker = IceAt(wanted, ice.Owner);
+                if (blocker is { } other
+                    && TryComp<IceComponent>(other, out var otherIce)
+                    && otherIce.Next == from
+                    && GetNetEntity(ice.Owner).Id < GetNetEntity(other).Id)
+                {
+                    ice.Comp.Route.Clear();
+                    ice.Comp.RouteGoal = null;
+                    ice.Comp.Next = null;
+                    otherIce.Route.Clear();
+                    otherIce.RouteGoal = null;
+                    otherIce.Next = null;
+                    SwapIcePositions(ice.Owner, other);
+                    return;
+                }
+
                 ice.Comp.Route.Clear();
                 ice.Comp.RouteGoal = null;
-                if (target.Kind == IceTargetKind.Tile)
-                    ice.Comp.Target = IceTarget.Idle;
-
                 return;
             }
 
@@ -523,6 +737,37 @@ public sealed partial class CyberspaceSystem
         }
 
         _transform.SetCoordinates(ice, new EntityCoordinates(_mapUid!.Value, pos));
+        ice.Comp.Next = ice.Comp.Route.Count > 0 ? ice.Comp.Route[0] : null;
+    }
+
+    /// <summary>
+    /// The ICE standing on a tile, apart from one, if given.
+    /// </summary>
+    private EntityUid? IceAt((int X, int Y) tile, EntityUid except)
+    {
+        var query = EntityQueryEnumerator<IceComponent>();
+        while (query.MoveNext(out var other, out _))
+        {
+            if (other == except)
+                continue;
+
+            var pos = _transform.GetWorldPosition(other);
+            if ((int) MathF.Floor(pos.X) == tile.Item1 && (int) MathF.Floor(pos.Y) == tile.Item2)
+                return other;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Exchanges two ICE's places, for a head-on meeting neither would otherwise get past.
+    /// </summary>
+    private void SwapIcePositions(EntityUid a, EntityUid b)
+    {
+        var at = _transform.GetWorldPosition(a);
+        var bt = _transform.GetWorldPosition(b);
+        _transform.SetCoordinates(a, new EntityCoordinates(_mapUid!.Value, bt));
+        _transform.SetCoordinates(b, new EntityCoordinates(_mapUid!.Value, at));
     }
 
     /// <summary>
@@ -585,7 +830,7 @@ public sealed partial class CyberspaceSystem
                 continue;
 
             var distance = (_transform.GetWorldPosition(uid) - deckPos).Length();
-            targets.Add(new DeckTarget(GetNetEntity(uid).Id, true, "ICE", ice.Integrity, distance <= StrikeReach,
+            targets.Add(new DeckTarget(GetNetEntity(uid).Id, true, "ICE", HealthOf(uid), distance <= StrikeReach,
                 (int) distance));
         }
     }
