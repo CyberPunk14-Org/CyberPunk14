@@ -39,6 +39,14 @@ public sealed record RegionGraph
 /// a thin or wide style, or the void or static between. Sockets make corridors keep their style from cell to
 /// cell, changing only through an adapter. The same network and seed always give the same tiles.
 /// </summary>
+/// <remarks>
+/// Generation is three layers, each using only the one before it: slots (where each pad sits), routing (which
+/// cells join which pads, and which sides they leave by), and style (what the WFC pass makes of those
+/// sockets). A cable side is a layer of the network in its own right: firewalls shut, no side may reach another
+/// and every node of a side must still reach every other. Slots and routing only affect what comes after them,
+/// so <see cref="Fit"/> can try a layout, generate its tiles and check those two promises, taking the first
+/// layout that keeps them rather than trusting that any one does.
+/// </remarks>
 public static class CyberRegionGenerator
 {
     /// <summary>Tries before the WFC pass falls back to wide corridors everywhere.</summary>
@@ -254,16 +262,13 @@ public static class CyberRegionGenerator
     }
 
     /// <summary>
-    /// Keeps the current slots if they can be routed. Otherwise tries other slot assignments: retrying
-    /// corridor order alone cannot fix pads that fence off another cable side.
+    /// The layouts to try, in order: the network's own slots first, then slot assignments that keep each cable
+    /// side's hosts together (a side scattered across the grid is what fences another side off). Each layout is
+    /// independent of the ones after it; a caller either takes the first that works or tries them all.
     /// </summary>
-    public static bool TryLayout(ulong seed, RegionShape shape, RegionGraph graph, out RegionGraph layout)
+    private static IEnumerable<RegionGraph> CandidateLayouts(ulong seed, RegionShape shape, RegionGraph graph)
     {
-        layout = graph;
-        var routeRng = new CyberRng(seed);
-        Route(shape.Width, shape.Height, layout, ref routeRng, out var missed);
-        if (missed == 0)
-            return true;
+        yield return graph;
 
         var rng = new CyberRng(seed ^ 0xD1B54A32D192ED03);
         for (var attempt = 0; attempt < 256; attempt++)
@@ -296,15 +301,176 @@ public static class CyberRegionGenerator
                     pads[i] = (switches[hub++], pads[i].Kind);
             }
 
-            layout = graph with { Pads = pads };
+            yield return graph with { Pads = pads };
+        }
+    }
+
+    /// <summary>
+    /// Keeps the current slots if they can be routed. Otherwise tries other slot assignments: retrying
+    /// corridor order alone cannot fix pads that fence off another cable side.
+    /// </summary>
+    public static bool TryLayout(ulong seed, RegionShape shape, RegionGraph graph, out RegionGraph layout)
+    {
+        var routeRng = new CyberRng(seed);
+        Route(shape.Width, shape.Height, graph, ref routeRng, out var missed);
+        if (missed == 0)
+        {
+            layout = graph;
+            return true;
+        }
+
+        var attempts = 0;
+        foreach (var candidate in CandidateLayouts(seed, shape, graph))
+        {
+            if (attempts++ == 0)
+                continue;
+
+            if (attempts > 256)
+                break;
+
             routeRng = new CyberRng(seed);
-            Route(shape.Width, shape.Height, layout, ref routeRng, out missed);
+            Route(shape.Width, shape.Height, candidate, ref routeRng, out missed);
             if (missed == 0)
+            {
+                layout = candidate;
                 return true;
+            }
         }
 
         layout = graph;
         return false;
+    }
+
+    /// <summary>Tries before <see cref="Fit"/> gives up and keeps the network's own slots.</summary>
+    private const int FitAttempts = 64;
+
+    /// <summary>
+    /// Finds a layout whose tiles actually keep the two promises the rest of cyberspace relies on: with the
+    /// firewalls open every pad is joined to the router, and with a firewall shut each cable side is joined to
+    /// itself and to no other side. The first candidate that passes is returned, so a network that routes as it
+    /// is keeps its slots; the network's own layout is the fallback if none passes.
+    /// </summary>
+    public static RegionGraph Fit(ulong seed, RegionShape shape, RegionGraph graph)
+    {
+        var attempts = 0;
+        foreach (var candidate in CandidateLayouts(seed, shape, graph))
+        {
+            if (attempts++ >= FitAttempts)
+                break;
+
+            var tiles = Generate(seed, shape, candidate);
+            if (Verified(shape, candidate, tiles))
+                return candidate;
+        }
+
+        return graph;
+    }
+
+    /// <summary>
+    /// Whether generated tiles keep every pad reachable while the firewalls are open, and each cable side on its
+    /// own while a firewall's gate is shut (the gate is the middle three by three tiles of its pad).
+    /// </summary>
+    private static bool Verified(RegionShape shape, RegionGraph graph, CyberFloor[] tiles)
+    {
+        var width = shape.Width * CyberLayout.Cell;
+        var index = graph.Pads.Select(p => PadTile(p.Slot, width)).ToList();
+
+        // Open firewalls: everything joins the first pad, which is the router.
+        var open = Flood(tiles, width, index[0], null);
+        for (var i = 0; i < index.Count; i++)
+        {
+            if (!open[index[i]])
+                return false;
+        }
+
+        if (graph.Zones is not { } zones)
+            return true;
+
+        var height = shape.Height * CyberLayout.Cell;
+
+        // A firewall's gate covers the middle three by three tiles of its pad.
+        var blocked = new bool[tiles.Length];
+        var shut = false;
+        for (var i = 0; i < graph.Pads.Count; i++)
+        {
+            if (zones[i] >= 0)
+                continue;
+
+            shut = true;
+            var (cx, cy) = (graph.Pads[i].Slot.X * CyberLayout.Cell + CyberLayout.Cell / 2,
+                graph.Pads[i].Slot.Y * CyberLayout.Cell + CyberLayout.Cell / 2);
+            for (var dy = -1; dy <= 1; dy++)
+            {
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    var (x, y) = (cx + dx, cy + dy);
+                    if (x >= 0 && y >= 0 && x < width && y < height)
+                        blocked[y * width + x] = true;
+                }
+            }
+        }
+
+        if (!shut)
+            return true;
+
+        // Each cable side must reach its own pads and no others.
+        var started = new HashSet<int>();
+        for (var i = 0; i < graph.Pads.Count; i++)
+        {
+            if (zones[i] < 0 || !started.Add(zones[i]))
+                continue;
+
+            var reached = Flood(tiles, width, index[i], blocked);
+            for (var j = 0; j < index.Count; j++)
+            {
+                if (zones[j] < 0)
+                    continue;
+
+                if (reached[index[j]] != (zones[j] == zones[i]))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>The tile at the middle of a pad's cell.</summary>
+    private static int PadTile((int X, int Y) slot, int width)
+    {
+        return (slot.Y * CyberLayout.Cell + CyberLayout.Cell / 2) * width
+               + slot.X * CyberLayout.Cell + CyberLayout.Cell / 2;
+    }
+
+    /// <summary>Which tiles can be walked to from one tile, over four ways, without crossing a blocked tile.</summary>
+    private static bool[] Flood(CyberFloor[] tiles, int width, int start, bool[]? blocked)
+    {
+        var height = tiles.Length / width;
+        var seen = new bool[tiles.Length];
+        if (blocked != null && blocked[start])
+            return seen;
+
+        var queue = new Queue<int>();
+        queue.Enqueue(start);
+        seen[start] = true;
+        while (queue.TryDequeue(out var i))
+        {
+            var (x, y) = (i % width, i / width);
+            foreach (var (dx, dy) in WfcWave.Directions)
+            {
+                var (nx, ny) = (x + dx, y + dy);
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height)
+                    continue;
+
+                var n = ny * width + nx;
+                if (seen[n] || blocked != null && blocked[n] || !CyberLayout.Walkable(tiles[n]))
+                    continue;
+
+                seen[n] = true;
+                queue.Enqueue(n);
+            }
+        }
+
+        return seen;
     }
 
     /// <summary>

@@ -435,9 +435,27 @@ public sealed partial class CyberspaceSystem : EntitySystem
             return;
         }
 
+        var seed = new CyberRng(_seed ^ unchecked((ulong) r * 0x9E3779B97F4A7C15)).NextU64();
+
+        // A layout that routes but leaves a cable side cut off is no good, so choose one whose tiles keep
+        // every pad joined while the firewalls are open and each cable side on its own while one is shut.
+        var layout = CyberRegionGenerator.Fit(seed, shape, graph);
+        if (!ReferenceEquals(layout, graph))
+        {
+            graph = layout;
+            for (var i = 0; i < pads.Count; i++)
+            {
+                pads[i] = (pads[i].Machine, layout.Pads[i].Slot, layout.Pads[i].Kind);
+            }
+
+            foreach (var (machine, slot, _) in pads)
+            {
+                region.Slots[machine] = slot;
+            }
+        }
+
         region.Graph = graph;
         region.Pads = machines;
-        var seed = new CyberRng(_seed ^ unchecked((ulong) r * 0x9E3779B97F4A7C15)).NextU64();
         PaintRegion(region.Cells!.Value, CyberRegionGenerator.Generate(seed, shape, graph));
         SyncNodes(r, network, pads);
         RestampSpurs(r);
