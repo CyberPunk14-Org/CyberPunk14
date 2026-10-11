@@ -1121,6 +1121,73 @@ public sealed class CyberspaceTest : GameTest
     }
 
     /// <summary>
+    /// Jacking in beside a firewall still puts the deck on the firewall's network: it gets an address like any
+    /// other deck, even though a firewall is a switch, not a host.
+    /// </summary>
+    [Test]
+    public async Task DecksJackedInAtAFirewallGetAnAddress()
+    {
+        var server = Pair.Server;
+        _entMan = server.ResolveDependency<IEntityManager>();
+        var machines = _entMan.System<WasmMachineSystem>();
+        var cyberspace = _entMan.System<CyberspaceSystem>();
+        var mapSys = _entMan.System<SharedMapSystem>();
+        var power = _entMan.System<SharedPowerReceiverSystem>();
+        var minds = _entMan.System<SharedMindSystem>();
+        var hands = _entMan.System<SharedHandsSystem>();
+        var godmode = _entMan.System<SharedGodmodeSystem>();
+
+        EntityUid router = default, firewall = default, inside = default, runner = default, deck = default;
+        await server.WaitAssertion(() =>
+        {
+            mapSys.CreateMap(out var mapId);
+            _grid = mapSys.CreateGridEntity(mapId);
+            for (var x = 0; x < 7; x++)
+            {
+                for (var y = 0; y < 3; y++)
+                {
+                    mapSys.SetTile(_grid, new Vector2i(x, y), new Tile(1));
+                }
+
+                // The firewall's tile has no cable: it joins the cable on either side.
+                if (x != 3)
+                    Place("CableData", x, 0);
+            }
+
+            router = Place("NetworkRouter", 0, 1);
+            firewall = Place("NetworkFirewall", 3, 0);
+            inside = Place("ComputerProgrammable", 5, 0);
+            foreach (var ent in new[] { router, firewall, inside })
+            {
+                power.SetNeedsPower(ent, false);
+            }
+
+            (runner, deck) = Runner(minds, hands, godmode, 3, 1);
+        });
+
+        await Pair.RunTicksSync(30);
+
+        EntityUid avatar = default;
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(cyberspace.NodeOf(firewall), Is.Not.Null, "the firewall has a pad");
+
+            // Jack in plugged in, beside the firewall itself.
+            Assert.That(cyberspace.TryJackIn(runner, deck, firewall, true));
+            Assert.That(cyberspace.IsJackedIn(runner, out var a));
+            avatar = a!.Value;
+        });
+
+        await Pair.RunTicksSync(10);
+        await server.WaitAssertion(() =>
+        {
+            Assert.That(machines.AddressOf(avatar), Is.Not.Null, "the deck is on the firewall's network");
+            Assert.That(Name(cyberspace.NodeOf(avatar)!.Value), Does.StartWith("deck 10."));
+            cyberspace.JackOut(runner, "", false);
+        });
+    }
+
+    /// <summary>
     /// A firewall between the router and a computer shuts the only way to the computer's pad, until a runner whose
     /// ID it doesn't pass breaches it.
     /// </summary>
