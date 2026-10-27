@@ -1,0 +1,491 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE: Terminal window (LEM1802 + Keyboard)</title>
+<!--
+  PROTOTYPE, throw away. Wayfinder ticket "Terminal window: LEM1802 display and keyboard"
+  (.scratch/dcpu-16/issues/12-terminal-prototype.md).
+
+  Three variants of the Terminal's window, switchable with the bottom bar (or ?variant=A|B|C):
+    A  Monitor: fixed x4 integer scale in a bezel, click the screen to type.
+    B  Fit window: resizable, nearest-neighbour fit or integer steps, explicit keyboard capture.
+    C  Screen + hardware panel: x3 screen beside a live view of the LEM1802 and Keyboard.
+
+  The "server" (RAM, LEM1802, Keyboard and a fake program standing in for DCPU code) runs in this page at
+  30 Hz. It sends the screen to the "client" view at the chosen rate and simulated ping, and counts the bytes
+  three sync strategies would cost. The default font and palette are a community transcription, used here only
+  for the prototype: their licence is unknown.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: var(--font-sans, system-ui, sans-serif); color: var(--foreground, #ddd); }
+  .wrap { display: flex; flex-direction: column; gap: 14px; padding-bottom: 64px; }
+  .note { font-size: 12px; color: var(--muted-foreground, #999); margin: 0; }
+  code, .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+
+  /* A rough SS14 (Nano) window. */
+  .win { background: #25252a; border: 1px solid #3a3a44; border-radius: 3px; box-shadow: 0 8px 28px #0009;
+         display: inline-flex; flex-direction: column; color: #d4d4dc; font: 13px/1.35 system-ui, sans-serif; max-width: 100%; }
+  .win .hdr { display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #1e1e22;
+              border-bottom: 2px solid #4d6b53; }
+  .win .hdr .title { flex: 1; font-weight: 600; letter-spacing: .02em; }
+  .win .hdr .x { width: 18px; height: 18px; border-radius: 2px; display: grid; place-items: center; color: #aaa; background: #2f2f36; font-size: 12px; }
+  .win .body { padding: 10px; display: flex; gap: 10px; }
+  .win.resizable { resize: both; overflow: hidden; min-width: 300px; min-height: 260px; width: 560px; height: 470px; }
+  .win.resizable .body { flex: 1; flex-direction: column; min-height: 0; }
+
+  canvas.screen { display: block; image-rendering: pixelated; outline: none; cursor: text; }
+  canvas.screen:focus { box-shadow: 0 0 0 2px #7cc48a; }
+
+  .bezel { background: linear-gradient(#3b3b40, #2b2b30); padding: 16px 16px 10px; border-radius: 10px;
+           box-shadow: inset 0 0 0 1px #4a4a52, inset 0 -3px 0 #1c1c20; }
+  .bezel-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: #9a9aa4; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: #222; box-shadow: inset 0 0 0 1px #000; }
+  .led.on { background: #63e27a; box-shadow: 0 0 6px #63e27a; }
+  .led.starting { background: #e2b763; box-shadow: 0 0 6px #e2b763; }
+
+  .toolbar { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .toolbar button, .ctl button { font: 12px system-ui; background: #34343c; color: #ddd; border: 1px solid #484852; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  .toolbar button.active, .ctl button.active { background: #4d6b53; border-color: #6c9a75; }
+  .capture { margin-left: auto; }
+  .captured-banner { font-size: 11px; color: #ffb4a8; background: #4a2020; padding: 2px 6px; border-radius: 3px; display: none; }
+  .fitbox { flex: 1; min-height: 0; display: grid; place-items: center; background: #111; border-radius: 3px; }
+
+  .hwpanel { width: 214px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+  .hwpanel h4 { margin: 0 0 3px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8f8f9a; }
+  .hwpanel .box { background: #1c1c20; border: 1px solid #34343c; border-radius: 3px; padding: 6px 8px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 1px 8px; }
+  .kv span:nth-child(odd) { color: #8f8f9a; }
+  .swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; margin-top: 4px; }
+  .swatches div { height: 12px; border-radius: 2px; box-shadow: inset 0 0 0 1px #0006; }
+  .chips { display: flex; flex-wrap: wrap; gap: 3px; min-height: 18px; }
+  .chip { font: 11px var(--font-mono, monospace); background: #34343c; border-radius: 3px; padding: 1px 4px; }
+
+  /* Prototype readout, outside the window: not part of the design. */
+  .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .card { background: var(--card, #1d1d22); color: var(--card-foreground, inherit); border: 1px solid var(--border, #333);
+          border-radius: var(--radius, 6px); padding: 16px; font-size: 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted-foreground, #999); }
+  .ctl { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+  .ctl label { color: var(--muted-foreground, #999); margin-right: 2px; }
+  .ctl select { font: 12px system-ui; background: #2a2a31; color: #ddd; border: 1px solid #484852; border-radius: 3px; }
+  table.sync { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.sync td, table.sync th { padding: 3px 4px; text-align: left; border-bottom: 1px solid var(--border, #333); }
+  table.sync td.n { text-align: right; font-family: var(--font-mono, monospace); }
+  .log { font: 11px/1.45 var(--font-mono, monospace); white-space: pre; min-height: 9em; }
+
+  .switcher { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
+              background: #f2f2f2; color: #111; border-radius: 999px; padding: 4px 6px; box-shadow: 0 4px 16px #000a; font: 600 12px system-ui; z-index: 10; }
+  .switcher button { border: 0; background: #ddd; border-radius: 999px; width: 26px; height: 26px; cursor: pointer; font-size: 14px; }
+  .switcher span { min-width: 210px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="note">PROTOTYPE. Power the Terminal on, then type into its screen. A fake program stands in for DCPU code: it maps the screen at <code>0x8000</code> and echoes keys. Use the controls below to make it do what real programs would.</p>
+
+  <!-- Variant A: Monitor -->
+  <div id="variant-A" class="variant">
+    <div class="win">
+      <div class="hdr"><span class="title">workstation terminal</span><span class="x">✕</span></div>
+      <div class="body" style="flex-direction:column">
+        <div class="bezel">
+          <canvas class="screen" id="cA" tabindex="0"></canvas>
+          <div class="bezel-foot"><span class="led" id="ledA"></span><span id="hintA">Click the screen to type · Esc releases the keyboard</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Variant B: Fit window -->
+  <div id="variant-B" class="variant">
+    <div class="win resizable" id="winB">
+      <div class="hdr"><span class="title">workstation terminal</span><span class="captured-banner" id="bannerB">KEYBOARD CAPTURED · Esc releases</span><span class="x">✕</span></div>
+      <div class="body">
+        <div class="toolbar">
+          <button data-scale="2">×2</button><button data-scale="3">×3</button><button data-scale="4">×4</button><button data-scale="fit" class="active">Fit</button>
+          <button class="capture" id="captureB">⌨ Type</button>
+        </div>
+        <div class="fitbox" id="fitB"><canvas class="screen" id="cB" tabindex="0"></canvas></div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:6px">Drag the window's bottom-right corner to resize it.</p>
+  </div>
+
+  <!-- Variant C: Screen + hardware panel -->
+  <div id="variant-C" class="variant">
+    <div class="win">
+      <div class="hdr"><span class="title">workstation terminal</span><span class="x">✕</span></div>
+      <div class="body">
+        <canvas class="screen" id="cC" tabindex="0"></canvas>
+        <div class="hwpanel">
+          <div class="box"><h4>Display</h4><div class="kv" id="hwLem"></div><div class="swatches" id="hwPal"></div></div>
+          <div class="box"><h4>Keyboard</h4><div class="kv" id="hwKbd"></div><div style="margin-top:4px;color:#8f8f9a">held</div><div class="chips" id="hwHeld"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div class="card">
+      <h3>The program (stand-in for DCPU code)</h3>
+      <div class="ctl">
+        <button id="bPower">Power on</button>
+        <button id="bMap">Unmap screen</button>
+        <button id="bBorder">Border colour +1</button>
+      </div>
+      <div class="ctl">
+        <button id="bPal">Custom palette</button>
+        <button id="bFont">Custom font</button>
+        <button id="bNoise">Busy screen</button>
+        <button id="bFill">Redraw all</button>
+      </div>
+      <div class="ctl"><label>Blink</label>
+        <select id="sBlink"><option value="700">0.7 s</option><option value="1000" selected>1 s</option><option value="1600">1.6 s</option></select>
+      </div>
+      <div class="kv" id="roLem" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h3>Sync to this viewer</h3>
+      <div class="ctl"><label>Send rate</label>
+        <select id="sRate"><option>30</option><option selected>15</option><option>10</option><option>5</option></select>
+        <label style="margin-left:6px">Ping</label>
+        <select id="sPing"><option>0</option><option selected>80</option><option>160</option><option>300</option></select><label>ms</label>
+      </div>
+      <table class="sync">
+        <tr><th>Strategy</th><th style="text-align:right">bytes/s</th></tr>
+        <tr><td>Whole state, every send</td><td class="n" id="s1"></td></tr>
+        <tr><td>Whole state, when changed</td><td class="n" id="s2"></td></tr>
+        <tr><td>Changed cells only</td><td class="n" id="s3"></td></tr>
+      </table>
+      <p class="note" style="margin-top:6px">The view applies changed cells. Blinking runs on the client and costs nothing.</p>
+    </div>
+    <div class="card">
+      <h3>Keyboard events (as the program sees them)</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div class="switcher"><button id="prev">←</button><span id="vlabel"></span><button id="next">→</button></div>
+
+<script>
+// ---------------------------------------------------------------- constants
+const W = 32, H = 12, CW = 4, CH = 8, BORDER = 8;
+const IW = W * CW + 2 * BORDER, IH = H * CH + 2 * BORDER;   // 144 x 112 internal pixels
+const CELLS = W * H;                                        // 384
+const TICK_MS = 1000 / 30;
+
+// Community transcription of the default LEM1802 font and palette: prototype only.
+const DEFAULT_PAL = [0x000,0x00a,0x0a0,0x0aa,0xa00,0xa0a,0xa50,0xaaa,0x555,0x55f,0x5f5,0x5ff,0xf55,0xf5f,0xff5,0xfff];
+const DEFAULT_FONT = [
+0xb79e,0x388e,0x722c,0x75f4,0x19bb,0x7f8f,0x85f9,0xb158,0x242e,0x2400,0x082a,0x0800,0x0008,0x0000,0x0808,0x0808,
+0x00ff,0x0000,0x00f8,0x0808,0x08f8,0x0000,0x080f,0x0000,0x000f,0x0808,0x00ff,0x0808,0x08f8,0x0808,0x08ff,0x0000,
+0x080f,0x0808,0x08ff,0x0808,0x6633,0x99cc,0x9933,0x66cc,0xfef8,0xe080,0x7f1f,0x0701,0x0107,0x1f7f,0x80e0,0xf8fe,
+0x5500,0xaa00,0x55aa,0x55aa,0xffaa,0xff55,0x0f0f,0x0f0f,0xf0f0,0xf0f0,0x0000,0xffff,0xffff,0x0000,0xffff,0xffff,
+0x0000,0x0000,0x005f,0x0000,0x0300,0x0300,0x3e14,0x3e00,0x266b,0x3200,0x611c,0x4300,0x3629,0x7650,0x0002,0x0100,
+0x1c22,0x4100,0x4122,0x1c00,0x1408,0x1400,0x081c,0x0800,0x4020,0x0000,0x0808,0x0800,0x0040,0x0000,0x601c,0x0300,
+0x3e49,0x3e00,0x427f,0x4000,0x6259,0x4600,0x2249,0x3600,0x0f08,0x7f00,0x2745,0x3900,0x3e49,0x3200,0x6119,0x0700,
+0x3649,0x3600,0x2649,0x3e00,0x0024,0x0000,0x4024,0x0000,0x0814,0x2200,0x1414,0x1400,0x2214,0x0800,0x0259,0x0600,
+0x3e59,0x5e00,0x7e09,0x7e00,0x7f49,0x3600,0x3e41,0x2200,0x7f41,0x3e00,0x7f49,0x4100,0x7f09,0x0100,0x3e41,0x7a00,
+0x7f08,0x7f00,0x417f,0x4100,0x2040,0x3f00,0x7f08,0x7700,0x7f40,0x4000,0x7f06,0x7f00,0x7f01,0x7e00,0x3e41,0x3e00,
+0x7f09,0x0600,0x3e61,0x7e00,0x7f09,0x7600,0x2649,0x3200,0x017f,0x0100,0x3f40,0x7f00,0x1f60,0x1f00,0x7f30,0x7f00,
+0x7708,0x7700,0x0778,0x0700,0x7149,0x4700,0x007f,0x4100,0x031c,0x6000,0x417f,0x0000,0x0201,0x0200,0x8080,0x8000,
+0x0001,0x0200,0x2454,0x7800,0x7f44,0x3800,0x3844,0x2800,0x3844,0x7f00,0x3854,0x5800,0x087e,0x0900,0x4854,0x3c00,
+0x7f04,0x7800,0x047d,0x0000,0x2040,0x3d00,0x7f10,0x6c00,0x017f,0x0000,0x7c18,0x7c00,0x7c04,0x7800,0x3844,0x3800,
+0x7c14,0x0800,0x0814,0x7c00,0x7c04,0x0800,0x4854,0x2400,0x043e,0x4400,0x3c40,0x7c00,0x1c60,0x1c00,0x7c30,0x7c00,
+0x6c10,0x6c00,0x4c50,0x3c00,0x6454,0x4c00,0x0836,0x4100,0x0077,0x0000,0x4136,0x0800,0x0201,0x0201,0x0205,0x0200];
+const AMBER_PAL = [0x000,0x210,0x420,0x630,0x840,0xa50,0xc60,0xe70,0x100,0x320,0x530,0x740,0x950,0xb60,0xd80,0xfb0];
+
+// ---------------------------------------------------------------- "server": RAM, LEM1802, Keyboard, program
+const S = {
+  ram: new Uint16Array(0x10000), on: false,
+  lem: { screen: 0, font: 0, pal: 0, border: 0, startUntil: 0 },
+  kbd: { buf: [], held: new Set() },
+  p: null,
+};
+const FONT_AT = 0x9000, PAL_AT = 0x9100;
+
+function lemMapScreen(addr) {
+  if (S.lem.screen === 0 && addr !== 0) S.lem.startUntil = performance.now() + 1000; // about a second to start up
+  S.lem.screen = addr;
+}
+function cell(ch, fg, bg, blink) { return (fg << 12) | (bg << 8) | (blink ? 0x80 : 0) | (ch & 0x7f); }
+function put(i, w) { S.ram[(0x8000 + i) & 0xffff] = w; }
+function get(i) { return S.ram[(0x8000 + i) & 0xffff]; }
+
+function powerOn() {
+  S.ram.fill(0);
+  S.lem = { screen: 0, font: 0, pal: 0, border: 0, startUntil: 0 };
+  S.kbd.buf = []; S.kbd.held.clear();
+  S.on = true;
+  S.p = { cur: 0, fg: 0xf, bg: 0x1, booted: false, inputStart: 0, noise: false };
+}
+function powerOff() { S.on = false; S.lem.screen = 0; S.lem.font = 0; S.lem.pal = 0; }
+
+function clearCursor() { put(S.p.cur, get(S.p.cur) & ~0x80 & 0xff80 | 0x20); }
+function drawCursor() { put(S.p.cur, cell(0x5f, 0xe, S.p.bg, true)); }
+function scrollUp() {
+  for (let i = 0; i < W * (H - 1); i++) put(i, get(i + W));
+  for (let i = W * (H - 1); i < CELLS; i++) put(i, cell(0x20, S.p.fg, S.p.bg));
+  S.p.cur -= W; S.p.inputStart = Math.max(0, S.p.inputStart - W);
+}
+function newline() { S.p.cur = (Math.floor(S.p.cur / W) + 1) * W; if (S.p.cur >= CELLS) scrollUp(); }
+function print(str, fg) {
+  for (const ch of str) { put(S.p.cur, cell(ch.charCodeAt(0), fg ?? S.p.fg, S.p.bg)); S.p.cur++; if (S.p.cur >= CELLS) scrollUp(); }
+}
+function clearScreen() { for (let i = 0; i < CELLS; i++) put(i, cell(0x20, S.p.fg, S.p.bg)); }
+
+function programTick() {
+  if (!S.on) return;
+  const p = S.p;
+  if (!p.booted) {
+    p.booted = true;
+    lemMapScreen(0x8000);           // HWI LEM A=0 B=0x8000
+    S.lem.border = p.bg;            // HWI LEM A=3
+    clearScreen(); p.cur = 0;
+    print("GRIDLINE BOOT ROM 0.1", 0xe); newline();
+    print("display 0x8000  keyboard ok", 0x7); newline(); newline();
+    print("> ", 0xa); p.inputStart = p.cur; drawCursor();
+  }
+  // HWI keyboard A=1 until empty: at most 8 a tick.
+  for (let n = 0; n < 8 && S.kbd.buf.length; n++) {
+    const k = S.kbd.buf.shift();
+    if (k === 0x11) { put(p.cur, cell(0x20, p.fg, p.bg)); newline(); print("> ", 0xa); p.inputStart = p.cur; drawCursor(); }
+    else if (k === 0x10) { if (p.cur > p.inputStart) { put(p.cur, cell(0x20, p.fg, p.bg)); p.cur--; drawCursor(); } }
+    else if (k >= 0x20 && k < 0x80) { put(p.cur, cell(k, p.fg, p.bg)); p.cur++; if (p.cur >= CELLS) scrollUp(); drawCursor(); }
+  }
+  if (p.noise) {
+    for (let n = 0; n < 24; n++) {
+      const i = Math.floor(Math.random() * W * 4) + W * 8;
+      if (i !== p.cur) put(i, cell(0x21 + Math.floor(Math.random() * 94), 1 + Math.floor(Math.random() * 15), 0));
+    }
+  }
+}
+
+// ---------------------------------------------------------------- keyboard (client -> server)
+const log = [];
+function logEvent(s) { log.push(s); if (log.length > 9) log.shift(); document.getElementById("log").textContent = log.join("\n"); }
+function hex(n) { return "0x" + n.toString(16).padStart(2, "0"); }
+
+// What a key types (e.key, so Shift changes it) ...
+function typedCode(e) {
+  switch (e.key) {
+    case "Backspace": return 0x10; case "Enter": return 0x11; case "Insert": return 0x12; case "Delete": return 0x13;
+    case "ArrowUp": return 0x80; case "ArrowDown": return 0x81; case "ArrowLeft": return 0x82; case "ArrowRight": return 0x83;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.key.length === 1) { const c = e.key.charCodeAt(0); if (c >= 0x20 && c < 0x7f) return c; }
+  return null;
+}
+// ... and which key is held (e.code, the physical key, so a release always matches its press).
+function heldCode(e) {
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") return 0x90;
+  if (e.code === "ControlLeft" || e.code === "ControlRight") return 0x91;
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.charCodeAt(3) + 0x20;   // lower-case letter
+  if (/^Digit\d$/.test(e.code)) return e.code.charCodeAt(5);
+  const m = { Space: 0x20, Backspace: 0x10, Enter: 0x11, Insert: 0x12, Delete: 0x13, ArrowUp: 0x80, ArrowDown: 0x81, ArrowLeft: 0x82, ArrowRight: 0x83,
+              Minus: 0x2d, Equal: 0x3d, BracketLeft: 0x5b, BracketRight: 0x5d, Semicolon: 0x3b, Quote: 0x27, Comma: 0x2c, Period: 0x2e, Slash: 0x2f, Backslash: 0x5c, Backquote: 0x60 };
+  return m[e.code] ?? null;
+}
+function ping() { return +document.getElementById("sPing").value; }
+function toServer(fn) { setTimeout(fn, ping() / 2); }
+
+function attachKeyboard(canvas, onRelease) {
+  canvas.addEventListener("keydown", e => {
+    if (e.key === "Escape") { canvas.blur(); onRelease?.(); e.preventDefault(); return; }
+    if (e.key === "Tab") { e.preventDefault(); logEvent("Tab: no key code, swallowed"); return; }
+    const t = typedCode(e), h = heldCode(e);
+    if (t === null && h === null) return;
+    e.preventDefault();
+    toServer(() => {
+      if (!S.on) return;
+      if (h !== null && !S.kbd.held.has(h)) { S.kbd.held.add(h); logEvent(`press   ${hex(h)}`); }
+      if (t !== null) { S.kbd.buf.push(t); logEvent(`typed   ${hex(t)} ${t >= 0x20 && t < 0x7f ? "'" + String.fromCharCode(t) + "'" : ""}`); }
+    });
+  });
+  canvas.addEventListener("keyup", e => {
+    const h = heldCode(e);
+    if (h === null) return;
+    toServer(() => { if (S.kbd.held.delete(h)) logEvent(`release ${hex(h)}`); });
+  });
+  canvas.addEventListener("blur", () => toServer(() => { for (const h of S.kbd.held) logEvent(`release ${hex(h)} (focus lost)`); S.kbd.held.clear(); }));
+}
+
+// ---------------------------------------------------------------- sync (server -> client view)
+const V = { vram: new Uint16Array(CELLS), font: null, pal: null, border: 0, mapped: false, startUntil: 0 };
+const sent = { vram: new Uint16Array(CELLS), font: null, pal: null, border: -1, mapped: null };
+const costs = [];
+function same(a, b) { if (a === b) return true; if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+
+function send() {
+  const mapped = S.on && S.lem.screen !== 0;
+  const vram = new Uint16Array(CELLS);
+  if (mapped) for (let i = 0; i < CELLS; i++) vram[i] = S.ram[(S.lem.screen + i) & 0xffff];
+  const font = S.lem.font ? S.ram.slice(S.lem.font, S.lem.font + 256) : null;
+  const pal = S.lem.pal ? S.ram.slice(S.lem.pal, S.lem.pal + 16) : null;
+
+  // Runs of changed cells, merging gaps of up to 2 cells.
+  const runs = []; let run = null;
+  for (let i = 0; i < CELLS; i++) {
+    if (vram[i] !== sent.vram[i]) { if (run && i - run.end <= 3) run.end = i + 1; else { run = { start: i, end: i + 1 }; runs.push(run); } }
+  }
+  const fontCh = !same(font, sent.font), palCh = !same(pal, sent.pal);
+  const borderCh = S.lem.border !== sent.border, mapCh = mapped !== sent.mapped;
+  const any = runs.length || fontCh || palCh || borderCh || mapCh;
+  const header = 8;
+  const whole = header + CELLS * 2 + (font ? 512 : 0) + (pal ? 32 : 0);
+  let delta = 0;
+  if (any) {
+    delta = header;
+    for (const r of runs) delta += 4 + (r.end - r.start) * 2;
+    if (fontCh) delta += font ? 512 : 2;
+    if (palCh) delta += pal ? 32 : 2;
+  }
+  costs.push({ t: performance.now(), s1: whole, s2: any ? whole : 0, s3: delta });
+
+  const msg = { runs: runs.map(r => ({ start: r.start, words: vram.slice(r.start, r.end) })), font, pal, border: S.lem.border, mapped, startUntil: S.lem.startUntil };
+  sent.vram = vram; sent.font = font; sent.pal = pal; sent.border = S.lem.border; sent.mapped = mapped;
+  if (!any) return;
+  setTimeout(() => {
+    for (const r of msg.runs) V.vram.set(r.words, r.start);
+    V.font = msg.font; V.pal = msg.pal; V.border = msg.border; V.mapped = msg.mapped; V.startUntil = msg.startUntil;
+  }, ping() / 2);
+}
+
+let tick = 0;
+setInterval(() => {
+  programTick();
+  tick++;
+  const every = Math.round(30 / +document.getElementById("sRate").value);
+  if (tick % every === 0) send();
+}, TICK_MS);
+
+// ---------------------------------------------------------------- rendering (client)
+const off = document.createElement("canvas"); off.width = IW; off.height = IH;
+const offCtx = off.getContext("2d");
+const img = offCtx.createImageData(IW, IH);
+function rgb(c) { return [((c >> 8) & 15) * 17, ((c >> 4) & 15) * 17, (c & 15) * 17]; }
+
+function renderInternal(t) {
+  const d = img.data;
+  if (!V.mapped) { d.fill(0); for (let i = 3; i < d.length; i += 4) d[i] = 255; offCtx.putImageData(img, 0, 0); return "off"; }
+  const pal = (V.pal || DEFAULT_PAL).map(rgb), font = V.font || DEFAULT_FONT;
+  const blinkOn = Math.floor(t / (+document.getElementById("sBlink").value / 2)) % 2 === 0;
+  const px = (x, y, c) => { const o = (y * IW + x) * 4; d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255; };
+  const b = pal[V.border & 15];
+  for (let y = 0; y < IH; y++) for (let x = 0; x < IW; x++) if (x < BORDER || y < BORDER || x >= IW - BORDER || y >= IH - BORDER) px(x, y, b);
+  for (let i = 0; i < CELLS; i++) {
+    const w = V.vram[i], ch = w & 0x7f, fg = pal[w >> 12], bg = pal[(w >> 8) & 15], blink = (w & 0x80) !== 0;
+    const g0 = font[ch * 2], g1 = font[ch * 2 + 1], cols = [g0 >> 8, g0 & 0xff, g1 >> 8, g1 & 0xff];
+    const cx = BORDER + (i % W) * CW, cy = BORDER + Math.floor(i / W) * CH;
+    for (let x = 0; x < 4; x++) for (let y = 0; y < 8; y++) px(cx + x, cy + y, ((cols[x] >> y) & 1) && (!blink || blinkOn) ? fg : bg);
+  }
+  offCtx.putImageData(img, 0, 0);
+  const left = V.startUntil - t;
+  if (left > 0) {   // warming up: fade in from black with a little noise
+    offCtx.fillStyle = `rgba(0,0,0,${Math.min(1, left / 700)})`; offCtx.fillRect(0, 0, IW, IH);
+    offCtx.fillStyle = "rgba(255,255,255,0.08)"; for (let n = 0; n < 6; n++) offCtx.fillRect(0, Math.floor(Math.random() * IH), IW, 1);
+    return "starting";
+  }
+  return "on";
+}
+
+function draw(canvas, scale) {
+  const w = Math.round(IW * scale), h = Math.round(IH * scale);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.drawImage(off, 0, 0, w, h);
+}
+
+// ---------------------------------------------------------------- variants
+const cA = document.getElementById("cA"), cB = document.getElementById("cB"), cC = document.getElementById("cC");
+attachKeyboard(cA);
+let capturedB = false, scaleB = "fit";
+function setCaptureB(on) { capturedB = on; document.getElementById("captureB").classList.toggle("active", on); document.getElementById("bannerB").style.display = on ? "inline" : "none"; if (on) cB.focus(); }
+attachKeyboard(cB, () => setCaptureB(false));
+cB.addEventListener("mousedown", e => { if (!capturedB) e.preventDefault(); });   // B only takes the keyboard through its button
+document.getElementById("captureB").onclick = () => setCaptureB(!capturedB);
+for (const btn of document.querySelectorAll("[data-scale]")) btn.onclick = () => {
+  scaleB = btn.dataset.scale; for (const b of document.querySelectorAll("[data-scale]")) b.classList.toggle("active", b === btn);
+};
+attachKeyboard(cC);
+
+const VARIANTS = [["A", "Monitor"], ["B", "Fit window"], ["C", "Screen + hardware panel"]];
+let vi = Math.max(0, VARIANTS.findIndex(v => v[0] === (new URLSearchParams(location.search).get("variant") || "A")));
+function showVariant() {
+  for (const [k] of VARIANTS) document.getElementById("variant-" + k).style.display = k === VARIANTS[vi][0] ? "" : "none";
+  document.getElementById("vlabel").textContent = `${VARIANTS[vi][0]} (${VARIANTS[vi][1]})`;
+  try { const u = new URL(location.href); u.searchParams.set("variant", VARIANTS[vi][0]); history.replaceState(null, "", u); } catch {}
+}
+document.getElementById("prev").onclick = () => { vi = (vi + VARIANTS.length - 1) % VARIANTS.length; showVariant(); };
+document.getElementById("next").onclick = () => { vi = (vi + 1) % VARIANTS.length; showVariant(); };
+document.addEventListener("keydown", e => {
+  if (document.activeElement && document.activeElement.classList.contains("screen")) return;
+  if (e.key === "ArrowLeft") document.getElementById("prev").click();
+  if (e.key === "ArrowRight") document.getElementById("next").click();
+});
+showVariant();
+
+// ---------------------------------------------------------------- controls
+const bPower = document.getElementById("bPower");
+bPower.onclick = () => { if (S.on) powerOff(); else powerOn(); bPower.textContent = S.on ? "Power off" : "Power on"; };
+document.getElementById("bMap").onclick = e => { if (!S.on) return; lemMapScreen(S.lem.screen ? 0 : 0x8000); e.target.textContent = S.lem.screen ? "Unmap screen" : "Map screen"; };
+document.getElementById("bBorder").onclick = () => { if (S.on) S.lem.border = (S.lem.border + 1) & 15; };
+document.getElementById("bPal").onclick = e => {
+  if (!S.on) return;
+  if (S.lem.pal) S.lem.pal = 0; else { S.ram.set(AMBER_PAL, PAL_AT); S.lem.pal = PAL_AT; }
+  e.target.classList.toggle("active", !!S.lem.pal);
+};
+document.getElementById("bFont").onclick = e => {
+  if (!S.on) return;
+  if (S.lem.font) S.lem.font = 0;
+  else {   // MEM_DUMP_FONT, then redraw 'a'..'z' with a top bar, as a program might
+    S.ram.set(DEFAULT_FONT, FONT_AT);
+    for (let c = 0x61; c <= 0x7a; c++) { S.ram[FONT_AT + c * 2] |= 0x0101; S.ram[FONT_AT + c * 2 + 1] |= 0x0101; }
+    S.lem.font = FONT_AT;
+  }
+  e.target.classList.toggle("active", !!S.lem.font);
+};
+document.getElementById("bNoise").onclick = e => { if (!S.on) return; S.p.noise = !S.p.noise; e.target.classList.toggle("active", S.p.noise); };
+document.getElementById("bFill").onclick = () => {
+  if (!S.on) return;
+  for (let i = 0; i < CELLS; i++) if (i !== S.p.cur) put(i, (get(i) & 0xf0ff) | (((get(i) >> 8 & 15) + 1 & 15) << 8));
+};
+
+// ---------------------------------------------------------------- frame
+function fmt(n) { return Math.round(n).toLocaleString(); }
+function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<span>${k}</span><span class="mono">${v}</span>`).join(""); }
+function frame(t) {
+  const state = renderInternal(t);
+  const v = VARIANTS[vi][0];
+  if (v === "A") draw(cA, 4);
+  if (v === "B") {
+    const box = document.getElementById("fitB").getBoundingClientRect();
+    const fit = Math.max(1, Math.min((box.width - 8) / IW, (box.height - 8) / IH));
+    draw(cB, scaleB === "fit" ? fit : Math.min(+scaleB, fit));
+  }
+  if (v === "C") draw(cC, 3);
+
+  const led = document.getElementById("ledA"); led.className = "led" + (state === "on" ? " on" : state === "starting" ? " starting" : "");
+  const lemRows = [
+    ["state", state], ["screen", V.mapped ? "0x8000" : "unmapped"], ["font", V.font ? hex(FONT_AT) : "default"],
+    ["palette", V.pal ? hex(PAL_AT) : "default"], ["border", String(V.border)]];
+  kv(document.getElementById("roLem"), lemRows);
+  kv(document.getElementById("hwLem"), lemRows);
+  document.getElementById("hwPal").innerHTML = (V.pal || DEFAULT_PAL).map((c, i) => `<div title="${i}" style="background:rgb(${rgb(c).join(",")})${i === (V.border & 15) ? ";outline:1px solid #fff" : ""}"></div>`).join("");
+  kv(document.getElementById("hwKbd"), [["buffer", String(S.kbd.buf.length)], ["interrupts", "off"]]);
+  document.getElementById("hwHeld").innerHTML = [...S.kbd.held].map(h => `<span class="chip">${hex(h)}</span>`).join("");
+
+  while (costs.length && costs[0].t < t - 2000) costs.shift();
+  const sum = k => costs.reduce((a, c) => a + c[k], 0) / 2;
+  document.getElementById("s1").textContent = fmt(sum("s1"));
+  document.getElementById("s2").textContent = fmt(sum("s2"));
+  document.getElementById("s3").textContent = fmt(sum("s3"));
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+logEvent("(power on, then click the screen and type)");
+</script>
+</body>
+</html>
