@@ -11,6 +11,7 @@
     A  Monitor: fixed x4 integer scale in a bezel, click the screen to type.
     B  Fit window: resizable, nearest-neighbour fit or integer steps, explicit keyboard capture.
     C  Screen + hardware panel: x3 screen beside a live view of the LEM1802 and Keyboard.
+    D  Combined (round 2): A's bezel, B's resizing, A's click to type; three fit modes to compare.
 
   The "server" (RAM, LEM1802, Keyboard and a fake program standing in for DCPU code) runs in this page at
   30 Hz. It sends the screen to the "client" view at the chosen rate and simulated ping, and counts the bytes
@@ -52,6 +53,13 @@
   .captured-banner { font-size: 11px; color: #ffb4a8; background: #4a2020; padding: 2px 6px; border-radius: 3px; display: none; }
   .fitbox { flex: 1; min-height: 0; display: grid; place-items: center; background: #111; border-radius: 3px; }
 
+  .win.resizableD { resize: both; overflow: hidden; min-width: 260px; min-height: 240px; width: 640px; height: 540px; }
+  .win.resizableD .body { flex: 1; flex-direction: column; min-height: 0; }
+  .bezelD { flex: 1; min-height: 0; display: flex; flex-direction: column; background: linear-gradient(#3b3b40, #2b2b30); padding: 14px 14px 8px; border-radius: 10px;
+            box-shadow: inset 0 0 0 1px #4a4a52, inset 0 -3px 0 #1c1c20; }
+  .glass { flex: 1; min-height: 0; display: grid; place-items: center; background: #0c0c0e; border-radius: 4px; }
+  .led.blink { animation: ledblink 1s steps(1) infinite; background: #f1d64a; box-shadow: 0 0 6px #f1d64a; }
+  @keyframes ledblink { 50% { background: #222; box-shadow: none; } }
   .hwpanel { width: 214px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
   .hwpanel h4 { margin: 0 0 3px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8f8f9a; }
   .hwpanel .box { background: #1c1c20; border: 1px solid #34343c; border-radius: 3px; padding: 6px 8px; }
@@ -125,6 +133,25 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Variant D: combined (A's bezel, B's resizing, A's click to type) -->
+  <div id="variant-D" class="variant">
+    <div class="win resizableD" id="winD">
+      <div class="hdr"><span class="title">workstation terminal</span><span class="x">✕</span></div>
+      <div class="body">
+        <div class="bezelD">
+          <div class="glass" id="glassD"><canvas class="screen" id="cD" tabindex="0"></canvas></div>
+          <div class="bezel-foot"><span class="led" id="ledD"></span><span id="hintD">Click the screen to type · Esc releases the keyboard</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="ctl" style="margin-top:6px">
+      <label>Fit (prototype only)</label>
+      <button data-fitd="int">Whole steps</button><button data-fitd="exact" class="active">Exact, sharp</button><button data-fitd="smooth">Exact, smoothed</button>
+      <span class="note" id="scaleD" style="margin-left:6px"></span>
+    </div>
+    <p class="note">Drag the window's bottom-right corner to resize it.</p>
   </div>
 
   <div class="readout">
@@ -392,10 +419,11 @@ function renderInternal(t) {
   return "on";
 }
 
-function draw(canvas, scale) {
+function draw(canvas, scale, smooth) {
   const w = Math.round(IW * scale), h = Math.round(IH * scale);
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-  const ctx = canvas.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.drawImage(off, 0, 0, w, h);
+  canvas.style.imageRendering = smooth ? "auto" : "pixelated";
+  const ctx = canvas.getContext("2d"); ctx.imageSmoothingEnabled = !!smooth; ctx.drawImage(off, 0, 0, w, h);
 }
 
 // ---------------------------------------------------------------- variants
@@ -410,9 +438,14 @@ for (const btn of document.querySelectorAll("[data-scale]")) btn.onclick = () =>
   scaleB = btn.dataset.scale; for (const b of document.querySelectorAll("[data-scale]")) b.classList.toggle("active", b === btn);
 };
 attachKeyboard(cC);
+const cD = document.getElementById("cD"); attachKeyboard(cD);
+let fitD = "exact";
+for (const btn of document.querySelectorAll("[data-fitd]")) btn.onclick = () => {
+  fitD = btn.dataset.fitd; for (const b of document.querySelectorAll("[data-fitd]")) b.classList.toggle("active", b === btn);
+};
 
-const VARIANTS = [["A", "Monitor"], ["B", "Fit window"], ["C", "Screen + hardware panel"]];
-let vi = Math.max(0, VARIANTS.findIndex(v => v[0] === (new URLSearchParams(location.search).get("variant") || "A")));
+const VARIANTS = [["A", "Monitor"], ["B", "Fit window"], ["C", "Screen + hardware panel"], ["D", "Combined: bezel + resize"]];
+let vi = Math.max(0, VARIANTS.findIndex(v => v[0] === (new URLSearchParams(location.search).get("variant") || "D")));
 function showVariant() {
   for (const [k] of VARIANTS) document.getElementById("variant-" + k).style.display = k === VARIANTS[vi][0] ? "" : "none";
   document.getElementById("vlabel").textContent = `${VARIANTS[vi][0]} (${VARIANTS[vi][1]})`;
@@ -466,10 +499,19 @@ function frame(t) {
     draw(cB, scaleB === "fit" ? fit : Math.min(+scaleB, fit));
   }
   if (v === "C") draw(cC, 3);
+  if (v === "D") {
+    const box = document.getElementById("glassD").getBoundingClientRect();
+    const exact = Math.max(1, Math.min(box.width / IW, box.height / IH));
+    const scale = fitD === "int" ? Math.max(1, Math.floor(exact)) : exact;
+    draw(cD, scale, fitD === "smooth");
+    document.getElementById("scaleD").textContent = `×${scale.toFixed(2)}${fitD === "exact" && scale % 1 ? " (some pixels a row wider)" : ""}`;
+  }
 
-  const led = document.getElementById("ledA"); led.className = "led" + (state === "on" ? " on" : state === "starting" ? " starting" : "");
+  const ledState = !S.on ? "" : !V.mapped ? " blink" : state === "starting" ? " starting" : " on";
+  document.getElementById("ledA").className = "led" + ledState;
+  document.getElementById("ledD").className = "led" + ledState;
   const lemRows = [
-    ["state", state], ["screen", V.mapped ? "0x8000" : "unmapped"], ["font", V.font ? hex(FONT_AT) : "default"],
+    ["state", !S.on ? "off" : !V.mapped ? "unmapped" : state], ["screen", V.mapped ? "0x8000" : "unmapped"], ["font", V.font ? hex(FONT_AT) : "default"],
     ["palette", V.pal ? hex(PAL_AT) : "default"], ["border", String(V.border)]];
   kv(document.getElementById("roLem"), lemRows);
   kv(document.getElementById("hwLem"), lemRows);
