@@ -1,0 +1,94 @@
+# DCPU-16 v1.7 and peripheral errata: recommended compatibility profile
+
+## Scope and rule for this report
+
+The DCPU-16 v1.7 and peripheral documents are the normative sources for behavior they actually specify. Community emulator source is evidence of implementation conventions, not a replacement specification. Where those sources conflict or omit behavior, the recommendation below names a local deterministic rule rather than claiming that rule is official. The official archive itself distinguishes the standard M35FD from the community HMD2043 and records nonstandard startup conventions for the monitor and keyboard. [Official-spec archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md)
+
+## CPU
+
+### ADX/SBX and EX
+
+The spec defines `ADX b,a` as `b+a+EX`, sets EX to 1 on overflow, and defines `SBX b,a` as `b-a+EX`, setting EX to `0xffff` on underflow and zero otherwise. It does not say whether EX must be snapshotted before the instruction overwrites it, or how the `0xffff` borrow marker is interpreted as an input to SBX. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+Implementations do not settle this uniformly: the Rust implementation writes the new EX before including it in the ADX/SBX result (and its SBX result uses source-minus-destination), while the old C implementation uses the old EX in its corresponding `ADX`/`SUX` arithmetic. Treat the Rust behavior as a bug, not a compatibility target. [Rust `dcpu.rs`](https://github.com/gustavla/dcpu16/blob/master/src/dcpu.rs) · [C `emulator.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c)
+
+**Recommendation:** snapshot `oldEX`, destination `oldB`, and source `a` first. For ADX compute `wide = oldB + a + oldEX` as unsigned widened arithmetic, then `b = low16(wide)` and `EX = 1` iff `wide > 0xffff`. For SBX, interpret `oldEX` as a signed 16-bit addend (so the specified underflow marker `0xffff` contributes −1), compute `wide = oldB - a + (short)oldEX`, store its low 16 bits in `b`, and set EX to `0xffff` iff `wide < 0`, otherwise zero. This is an explicit resolution of the omitted borrow convention; pin it with a chained-borrow test (e.g. `oldB=0, a=1, oldEX=0xffff` gives `b=0xfffe, EX=0xffff`). This preserves the spec's stated formulas and makes the documented underflow marker useful for a multiword subtract. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+### Failed conditionals, skip chains, and interrupts
+
+The spec charges the conditional test 2 cycles plus one when it fails; a failed conditional skips the next instruction, and a skipped conditional skips an additional instruction, allowing chained conditions. The text does not explicitly state whether an interrupt may be dispatched in the middle of such a skip cascade. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+The C emulator completes the `do/while(SKIP)` cascade before advancing its clock or dispatching a queued interrupt; the Rust emulator recursively skips and handles the queue only after the cascade. Both consume extra operand words when skipping. [C `emulator.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c) · [Rust `dcpu.rs`](https://github.com/gustavla/dcpu16/blob/master/src/dcpu.rs)
+
+**Recommendation:** decode/consume the whole skipped instruction, including its extra words, without executing its side effects; charge +1 for a failed conditional and +1 for each further conditional skipped in the chain, with no extra cycle for the terminal non-conditional instruction; only consider interrupt delivery after the cascade has ended. This preserves the observable behavior shared by these emulators and avoids an interrupt handler changing operands or control flow partway through a skip chain. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt) · [C `emulator.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c)
+
+### HWI cycle cost
+
+The v1.7 table gives `HWI a` a cost of `4+`; the value table separately charges a cycle when operand `a` needs a following word. A hardware device can add its own wait/stall cost, and LEM1802 font/palette dump commands explicitly halt the CPU for 256/16 cycles respectively. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt) · [LEM1802 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/lem1802.txt)
+
+**Recommendation:** charge 4 base cycles plus ordinary `a` operand-fetch/addressing costs (so a next-word operand adds its one cycle); do not add a generic extra HWI cycle or treat `4+` as a variable cost based on peripheral identity. Add only device-specific wait cycles expressly required by that peripheral's contract. The C implementation's HWI adds 4 after operand evaluation, whose next-word addressing path already adds its cycle. [C `emulator.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c)
+
+### Reserved/illegal encodings
+
+The spec labels special opcode 0 reserved and leaves several basic and special opcode numbers unassigned, without assigning their effects, PC movement, or cycle cost. Community implementations differ: the Haskell emulator stops on an unknown instruction; the Rust emulator treats special opcode 0 as termination and other unknown opcodes as no-ops; the old C emulator adds nonstandard `BRK`/`SUX` instructions and otherwise has default handling. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt) · [Haskell `Emulator.hs`](https://github.com/jaspervdj/dcpu16-hs/blob/master/src/Emulator.hs) · [Rust `dcpu.rs`](https://github.com/gustavla/dcpu16/blob/master/src/dcpu.rs) · [C `emulator.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c)
+
+**Recommendation:** for strict mode, fault/stop the Machine on every unassigned opcode (including special opcode 0), report its address and 16-bit word, and do not execute operand side effects. Do not silently adopt another emulator's extension or turn invalid words into no-ops. This fail-stop rule is a project policy because v1.7 does not specify one; any explicit compatibility extensions should be a separately named mode. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+### Interrupt queue boundary and uninitialized hardware
+
+The CPU spec says the interrupt queue may hold 256 messages and the CPU catches fire if it grows beyond 256; a queued interrupt is triggered when dequeued, and IA=0 causes it to be ignored when triggered. It also forbids hardware from modifying CPU registers/RAM until it has received at least one HWI. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+**Recommendation:** allow exactly 256 queued messages and catch fire on enqueue 257 (do not silently drop it); count delivery at dequeue, honor IA=0 at dequeue, and gate any device-originated register/RAM writes on a prior HWI to that device. This directly follows the published boundaries and prevents host-driven input from bypassing the initialization rule. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+## Standard peripherals
+
+### LEM1802
+
+The monitor text describes a 32×12-cell display (384 cells) but calls its RAM region 386 words. The Rust emulator derives 32 columns × 12 rows and iterates that exact count; the original C emulator similarly uses a 384-cell screen region. The 386 figure is an arithmetic/spec typo, not a 386-word screen with two extra cells. [LEM1802 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/lem1802.txt) · [Rust monitor](https://github.com/gustavla/dcpu16/blob/master/src/devices/monitor_lem1802.rs) · [C monitor](https://github.com/fogleman/DCPU-16/blob/master/emulator/lem.c)
+
+**Recommendation:** map exactly 384 words (`0x180`), wrap RAM addresses at 16 bits, and never read/write two padding words. The spec's A=0/B=0 command disconnects the display; a transition from disconnected to mapped takes about one second, during which other monitor commands still process. [LEM1802 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/lem1802.txt) · [Rust monitor](https://github.com/gustavla/dcpu16/blob/master/src/devices/monitor_lem1802.rs)
+
+The document does not state a power-on screen mapping. Strict implementations reset disconnected (`connected=false` / `lem_screen=0`); the archive records an alternate community convention of pre-mapping at `0x8000`, and a libretro compatibility profile explicitly offers that startup behavior. [Rust monitor](https://github.com/gustavla/dcpu16/blob/master/src/devices/monitor_lem1802.rs) · [C emulator reset](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c) · [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md) · [libretro compatibility profile](https://github.com/isaiahpettingill/dcpu-16-libretro)
+
+**Recommendation:** strict default is disconnected, with built-in font and palette active; the program must map video RAM with HWI. Treat startup as 100,000 emulated cycles (one second at this project's 100 kHz), render no mapped content until ready, but continue accepting monitor commands. Make automatic `0x8000` mapping an opt-in legacy profile only; it is a convenience rather than the peripheral contract. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt) · [LEM1802 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/lem1802.txt) · [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md)
+
+### Keyboard and the `0x9000` convention
+
+The standard Keyboard is an HWI device: A=0 clears its buffer, A=1 returns the next queued key in C (or zero), A=2 queries whether B is held, and A=3 selects/disables an interrupt message. Its interrupt can signal key press, release, or typing. `0x9000` is not part of that protocol; the archive describes it as a legacy Notch-alpha 16-entry memory-mapped ring buffer. [Keyboard spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/keyboard.txt) · [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md)
+
+Emulators show why the distinction matters: the C emulator's official device uses an oldest-first 16-key queue; the Rust implementation uses a bounded queue but pops with `Vec::pop()` (newest-first); a D implementation exposes an optional 0x9000 memory mapping enabled by default. [C `keyboard.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/keyboard.c) · [Rust `keyboard_generic.rs`](https://github.com/gustavla/dcpu16/blob/master/src/devices/keyboard_generic.rs) · [D keyboard source](https://dcpu-16.dpldocs.info/~master/source/dcpu16.emulator.devices.keyboard.d.html)
+
+**Recommendation:** use the official HWI interface only by default; return buffered key events FIFO (oldest first), and keep pressed-state queries independent of the event queue. Document queue capacity/overflow as a local policy because the spec supplies neither (suggest 256 queued events, discard newest on full). If old programs must run, expose 0x9000 as a visibly named compatibility shim, not as a second implicit default protocol. [Keyboard spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/keyboard.txt) · [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md) · [C `keyboard.c`](https://github.com/fogleman/DCPU-16/blob/master/emulator/keyboard.c)
+
+The Generic Keyboard and Clock documents provide ID and version but do not specify a manufacturer ID, while HWQ returns one. The Rust implementation reports manufacturer zero for both; the C emulator reports the LEM manufacturer's ID for these Generic devices. [Keyboard spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/keyboard.txt) · [Clock spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/clock.txt) · [Rust CPU/device IDs](https://github.com/gustavla/dcpu16/blob/master/src/devices/keyboard_generic.rs) · [C HWQ](https://github.com/fogleman/DCPU-16/blob/master/emulator/emulator.c)
+
+**Recommendation:** use manufacturer ID `0x00000000` for the Generic Keyboard and Clock; do not copy the monitor's manufacturer field to devices whose specs do not claim it. [Keyboard spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/keyboard.txt) · [Clock spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/clock.txt) · [Rust CPU/device IDs](https://github.com/gustavla/dcpu16/blob/master/src/devices/clock_generic.rs)
+
+### Generic Clock
+
+The Clock's A=0 command sets the frequency to `60/B` ticks per second (B=0 disables it); A=1 returns the ticks since the last A=0 in C; A=2 sets/disables its interrupt message. It does not state a rounding rule for tick intervals that do not divide 100,000 CPU cycles evenly. [Clock spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/clock.txt) · [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt)
+
+**Recommendation:** drive it from emulated CPU cycles, not host wall time: accumulate the rational rate `60/B` against 100,000 cycles/second, preserve fractional remainder, and process every tick if a frame advances across multiple intervals. Reset tick count and phase on A=0; A=1 reads without clearing. The Rust device uses CPU cycles and carries remainder; the Go device's wall-clock loop can miss elapsed intervals, so it is not a timing oracle. [Rust clock](https://github.com/gustavla/dcpu16/blob/master/src/devices/clock_generic.rs) · [Go clock](https://github.com/robertsdionne/dcpu/blob/master/clock/clock.go) · [Clock spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/clock.txt)
+
+### M35FD and HMD2043 are separate devices
+
+M35FD specifies 1,440 sectors of 512 words, an asynchronous drive, busy/ready states, accepted-command result in B, and errors including busy, ejected media, and bad sector. It quotes approximately 30.7 kwords/s and 2.4 ms per track but does not define a precise rounding or seek formula. [M35FD spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/m35fd.txt)
+
+Implementations diverge on timing and invalid sectors: the Rust M35FD performs delayed operations in cycle units and rejects a sector outside the 1,440-sector range; the Go implementation performs reads/writes synchronously and reduces the requested sector modulo 1,440. [Rust M35FD](https://github.com/gustavla/dcpu16/blob/master/src/devices/floppy_m35fd.rs) · [Go M35FD](https://github.com/robertsdionne/dcpu/blob/master/floppy/floppy.go)
+
+**Recommendation:** use an asynchronous state machine; accept a valid operation with B=1 and set BUSY, otherwise leave memory unchanged and return failure with the specified error. Reject X≥1440 as `ERROR_BAD_SECTOR` (never wrap it); snapshot the 512-word source buffer when a write is accepted, then commit the full sector at completion, while a read copies its full sector into RAM at completion. Report ejection during transfer as `ERROR_EJECT`. Convert the approximate figures deterministically at 100 kHz: 512/30,700×100,000 ≈ 1,668 cycles per sector, plus 240 cycles for each track crossed. This conversion/atomic-buffer timing is a stated implementation rule where the M35FD gives only approximate mechanics. [M35FD spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/m35fd.txt) · [Rust M35FD](https://github.com/gustavla/dcpu16/blob/master/src/devices/floppy_m35fd.rs)
+
+HMD2043 is a fan-written, separate HWI protocol and hardware identity, not another name/version of M35FD. The archive README identifies it as an earlier community floppy spec; the HMD author’s v1.1 notes specifically call out an initially word-swapped manufacturer ID and an unresolved signedness ambiguity for the media-quality result. The HMD source defines quality results as the exact 16-bit words `0x7fff` and `0xffff`. [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md) · [HMD2043 v1.1](https://gist.github.com/DanielKeep/2495578)
+
+**Recommendation:** for the map's standard drive implement M35FD only. If HMD2043 compatibility is desired, register it separately with its own ID, manufacturer, version, and command table; compare its quality result as an unsigned 16-bit code, not a signed number. A common raw-sector storage backend is fine, but do not alias the protocols. [M35FD spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/m35fd.txt) · [HMD2043 v1.1](https://gist.github.com/DanielKeep/2495578) · [archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md)
+
+### SPED-3 vertex Z coordinate
+
+The SPED-3 prose requires X, Y, and Z, each eight bits, plus color and intensity across two words, but its printed first word labels the upper byte as Y and its second word also labels the low byte Y; Z is never encoded. The Go SPED-3 renderer decodes the first word's low byte as X, its high byte as Z, and the second word's low byte as Y, which is the coherent three-coordinate layout. [SPED-3 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/sped3.txt) · [Go SPED-3 `buildVertex`](https://github.com/robertsdionne/dcpu/blob/master/sped3/sped3.go)
+
+**Recommendation:** resolve the typo as word 0 = `ZZZZZZZZXXXXXXXX`, word 1 = `00000ICCYYYYYYYY`; X is word0[7:0], Z word0[15:8], Y word1[7:0], with intensity/color in word1[10:8]. Interpret Y as vertical and Z as depth per the spec's coordinate descriptions. Keep the documented two-word stride and cap the advertised 128 vertices. [SPED-3 spec](https://github.com/lucaspiller/dcpu-specifications/blob/master/sped3.txt) · [Go SPED-3 renderer](https://github.com/robertsdionne/dcpu/blob/master/sped3/sped3.go)
+
+## Implementer checklist
+
+1. Implement the spec's defined behavior verbatim; use the policies above only for holes/contradictions, and label compatibility shims explicitly. [Official-spec archive README](https://github.com/lucaspiller/dcpu-specifications/blob/master/README.md)
+2. Lock the important boundaries in tests: 384 screen words; startup disconnected; HWI = 4 + operand costs; skip chain interrupt deferral; 256 queued interrupts / fire on 257; valid/invalid M35FD sectors; two-word SPED XYZ decode. [DCPU-16 v1.7](https://github.com/lucaspiller/dcpu-specifications/blob/master/dcpu16.txt) · [LEM1802](https://github.com/lucaspiller/dcpu-specifications/blob/master/lem1802.txt) · [M35FD](https://github.com/lucaspiller/dcpu-specifications/blob/master/m35fd.txt) · [SPED-3](https://github.com/lucaspiller/dcpu-specifications/blob/master/sped3.txt)
